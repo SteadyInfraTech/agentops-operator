@@ -29,6 +29,8 @@ import (
 const (
 	indexServiceRuntimeRef = ".spec.runtimeRef.name"
 	indexSessionPoolRef    = ".spec.poolRef.name"
+	// indexSessionAssignedAgent finds the sessions bound to an AgentService.
+	indexSessionAssignedAgent = ".status.assignedAgent"
 )
 
 // SetupIndexes registers the field indexes required by the AgentOps controllers.
@@ -43,9 +45,17 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) error {
 	}); err != nil {
 		return err
 	}
-	return idx.IndexField(ctx, &agentsv1alpha1.AgentSession{}, indexSessionPoolRef, func(o client.Object) []string {
+	if err := idx.IndexField(ctx, &agentsv1alpha1.AgentSession{}, indexSessionPoolRef, func(o client.Object) []string {
 		if ref := o.(*agentsv1alpha1.AgentSession).Spec.PoolRef; ref != nil {
 			return []string{ref.Name}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return idx.IndexField(ctx, &agentsv1alpha1.AgentSession{}, indexSessionAssignedAgent, func(o client.Object) []string {
+		if name := o.(*agentsv1alpha1.AgentSession).Status.AssignedAgent; name != "" {
+			return []string{name}
 		}
 		return nil
 	})

@@ -38,6 +38,15 @@ var (
 		Help: "Current phase of an AgentService (1 = active phase).",
 	}, []string{"namespace", "name", "phase"})
 
+	// AgentServiceActiveSessions is the number of Bound AgentSessions assigned
+	// to an AgentService. Unlike CPU or memory it reflects how busy an agent
+	// that mostly waits on LLM calls really is, which makes it a suitable
+	// scaling signal (e.g. for KEDA's prometheus scaler).
+	AgentServiceActiveSessions = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "agentops_agentservice_active_sessions",
+		Help: "Number of Bound AgentSessions assigned to an AgentService.",
+	}, []string{"namespace", "name"})
+
 	// AgentPoolSessions reports active sessions and capacity per AgentPool.
 	AgentPoolSessions = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "agentops_agentpool_sessions",
@@ -80,7 +89,7 @@ const (
 
 func init() {
 	metrics.Registry.MustRegister(
-		AgentServiceReplicas, AgentServicePhase, AgentPoolSessions,
+		AgentServiceReplicas, AgentServicePhase, AgentServiceActiveSessions, AgentPoolSessions,
 		AgentSessionTransitions, AgentSessionAssignments,
 	)
 }
@@ -98,6 +107,7 @@ func DeleteAgentService(namespace, name string) {
 	l := prometheus.Labels{"namespace": namespace, "name": name}
 	AgentServiceReplicas.DeletePartialMatch(l)
 	AgentServicePhase.DeletePartialMatch(l)
+	AgentServiceActiveSessions.DeletePartialMatch(l)
 }
 
 // DeleteAgentPool removes all series for a deleted AgentPool.

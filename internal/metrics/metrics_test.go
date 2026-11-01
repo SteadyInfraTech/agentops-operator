@@ -64,6 +64,56 @@ func assignments(t *testing.T, namespace, target, result string) (float64, bool)
 	return 0, false
 }
 
+// gaugeValue returns the value of the named gauge series carrying the given
+// labels and whether such a series exists.
+func gaugeValue(t *testing.T, name string, want map[string]string) (float64, bool) {
+	t.Helper()
+	mfs, err := ctrlmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			matched := 0
+			for _, l := range m.GetLabel() {
+				if want[l.GetName()] == l.GetValue() {
+					matched++
+				}
+			}
+			if matched == len(want) {
+				return m.GetGauge().GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func TestDeleteAgentServiceDropsActiveSessionsSeries(t *testing.T) {
+	const ns, gone, kept = "metrics-test-active", "gone", "kept"
+	const name = "agentops_agentservice_active_sessions"
+	AgentServiceActiveSessions.WithLabelValues(ns, gone).Set(3)
+	AgentServiceActiveSessions.WithLabelValues(ns, kept).Set(2)
+	t.Cleanup(func() {
+		AgentServiceActiveSessions.DeletePartialMatch(prometheus.Labels{"namespace": ns})
+	})
+
+	if got, ok := gaugeValue(t, name, map[string]string{"namespace": ns, "name": gone}); !ok || got != 3 {
+		t.Fatalf("active sessions for %s/%s = %v (exists=%v), want 3", ns, gone, got, ok)
+	}
+
+	DeleteAgentService(ns, gone)
+
+	if _, ok := gaugeValue(t, name, map[string]string{"namespace": ns, "name": gone}); ok {
+		t.Errorf("series for deleted AgentService %s/%s still exported", ns, gone)
+	}
+	if got, ok := gaugeValue(t, name, map[string]string{"namespace": ns, "name": kept}); !ok || got != 2 {
+		t.Errorf("deleting %s/%s changed %s/%s: value=%v exists=%v, want 2", ns, gone, ns, kept, got, ok)
+	}
+}
+
 func TestRecordSessionAssignment(t *testing.T) {
 	const ns = "metrics-test"
 	resetAssignments(t, ns)
