@@ -22,9 +22,13 @@ Today the operator does nothing about this:
   `AgentService` (`status.assignedAgent`, `status.endpoint` = the Service address), never
   to a pod. The only load figure it has is the per-service count in
   `agentops_agentservice_active_sessions`.
+- If a pod holding a session goes away, the session stays `Bound`: the `AgentService`
+  still exists, so the operator sees nothing wrong. Clients find out from the lost
+  connection.
 
-`AgentSession.spec.maxDurationSeconds` defaults to 3600, so "wait for sessions to finish"
-can mean an hour. Any design has to say how long it is willing to wait.
+`AgentSession.spec.maxDurationSeconds` defaults to 3600, which is too long to wait for on
+every rollout or node drain. The drain budget is therefore its own setting (below), not
+derived from the session lifetime; sessions that outlive it are cut.
 
 ## Requirements
 
@@ -49,18 +53,55 @@ spec:
     state: Stateful          # default. Stateless = no in-memory session state
     transport: Connection    # Connection | Request
   lifecycle:
-    terminationGracePeriodSeconds: 300   # example override; unset = Kubernetes' 30 s
+    drainTimeoutSeconds: 300     # max time a draining agent may keep serving sessions
+    shutdownMarginSeconds: 20    # time the agent needs to exit after draining
 ```
 
-`Stateful` is the default because it is the safe assumption: the operator never treats an
-agent as freely killable unless the user says it is. `Stateless` opts out of drain
-protections and allows normal scale-in.
+`state` and `transport` are independent questions:
+
+- `state` is whether losing the pod loses data. `Stateful` is the default because it is the
+  safe assumption: the operator never treats an agent as freely killable unless the user
+  says it is.
+- `transport` is whether losing the pod interrupts something in flight. A long-lived
+  stream is cut by any pod removal whether or not the agent holds state, so connection
+  draining applies to every `Connection` agent, `Stateless` included. For a `Stateless`
+  agent it just means clients can reconnect to another pod without losing anything.
 
 | `state` | `transport` | Drain-safe? | How |
 |---|---|---|---|
-| `Stateless` | any | yes | nothing session-specific. Step 1 only lets in-flight requests finish |
-| `Stateful` | `Connection` | yes | fail `/readyz` when draining starts; established connections keep flowing through kube-proxy, new ones go to other pods; wait for idle |
+| `Stateless` | `Request` | yes | in-flight requests only: short drain |
+| `Stateless` | `Connection` | yes | fail `/readyz`; wait for streams to close; clients reconnect elsewhere with nothing lost |
+| `Stateful` | `Connection` | yes | same, but the state lives as long as the connection |
 | `Stateful` | `Request` | **not with plain Service routing** | needs session-aware routing (see below) |
+
+Failing `/readyz` removes the pod from the Service endpoints. Established connections keep
+flowing in the usual kube-proxy modes while new ones go to other pods, which is why this is
+correct for `Connection` and wrong for `Request` (every new request is a new connection).
+
+### Drain timeout and grace period
+
+Users configure what they care about, the drain budget; the operator derives the pod's
+`terminationGracePeriodSeconds`:
+
+```
+terminationGracePeriodSeconds = drainTimeoutSeconds + shutdownMarginSeconds
+preStop wait                  = drainTimeoutSeconds
+```
+
+This removes a class of invalid configurations by construction: there is no independent
+grace period that could be smaller than the margin, so the wait can never be non-positive.
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `drainTimeoutSeconds` | `300` for `Stateful` or `Connection`; `10` for `Stateless` + `Request` | 0 to 3600 (proposed cap) |
+| `shutdownMarginSeconds` | `20`, matching the echo agent's 20 s shutdown timeout | 1 to 300 (proposed) |
+
+The `Stateless` + `Request` default derives a 30 s grace period, equal to Kubernetes' own
+default. An agent that needs longer than the margin to exit must raise it.
+
+Caveat: an agent that ignores `SIGTERM` makes every rollout wait the full derived grace
+period before the kubelet sends `SIGKILL`. Handling `SIGTERM` is therefore a hard
+requirement of the contract below, not a nicety.
 
 ### Why `Stateful` + `Request` needs routing first
 
@@ -68,11 +109,28 @@ With a ClusterIP Service every request may land on a different pod, so in-memory
 already broken in steady state, before any scale-in. `sessionAffinity: ClientIP` only
 partly helps (clients behind one NAT share a pod) and it defeats retries: a retry from the
 same client IP returns to the same pod. Draining such sessions safely needs the router to
-know which pod owns a session (header or consistent-hash gateway, or per-pod addressing)
-and to stop assigning new sessions to a draining pod. That is the sticky-routing work the
-README already lists as future work, and it should come before drain support for this
-combination. Until then the operator should report it rather than pretend:
-a `DrainSafe=False` condition with reason `RequestTransportWithoutRouting`.
+know which pod owns a session and to stop assigning new sessions to a draining pod. That is
+the sticky-routing work the README already lists as future work, and it should come before
+drain support for this combination. Until then the operator should report it rather than
+pretend: a `DrainSafe=False` condition with reason `RequestTransportWithoutRouting`.
+
+### Routing choice: consistent hashing, with a caveat
+
+Hashing a session identifier (a header or the `AgentSession` name) onto the set of agent
+pods is a good trade-off for placement: no lookup table, and most sessions keep their pod
+when pods are added or removed.
+
+It is not sufficient for draining on its own. A pure hash does not know a pod is draining;
+removing the pod from the ring remaps its sessions, which is exactly the loss we are
+avoiding. A draining pod must keep receiving the sessions it already owns while being
+excluded for new ones. Proposal: hash for *new* sessions, plus explicit pins for sessions
+owned by a draining pod, fed from agent-reported state (step 3). Adding or removing pods
+also remaps roughly `1/N` of sessions even without draining, so `Stateful` agents need the
+pins for scale-out as well, or must tolerate that loss.
+
+This needs a data-plane component the operator does not have today. Prefer an existing
+gateway (Gateway API implementation or Envoy-based) over a custom proxy. The choice of
+gateway is open (see decisions).
 
 ### Agent-side rejection of new sessions (not a general answer)
 
@@ -87,11 +145,12 @@ steady-state routing, so it is a fallback, not the plan.
 
 ### Step 1: bounded termination (operator only, no agent change)
 
-Add `lifecycle.terminationGracePeriodSeconds` to `AgentServiceSpec` / `AgentRuntimeSpec`
-and set it on the pod template. Also set `strategy.rollingUpdate.maxUnavailable: 0` so a
-rollout never lowers capacity below the desired count. This makes the existing `SIGTERM`
-handling in agents meaningful (the echo agent already shuts down gracefully with a 20 s
-timeout). It is safe by default because an unset value keeps Kubernetes' 30 s.
+Add `lifecycle.drainTimeoutSeconds` and `lifecycle.shutdownMarginSeconds` to
+`AgentServiceSpec` / `AgentRuntimeSpec` (service overrides runtime) and set the derived
+`terminationGracePeriodSeconds` on the pod template. Also set
+`strategy.rollingUpdate.maxUnavailable: 0` so a rollout never lowers capacity below the
+desired count. Agents that already handle `SIGTERM` (the echo agent does) benefit
+immediately.
 
 ### Step 2: scale on sessions, and scale in slowly
 
@@ -100,27 +159,38 @@ external metric). For `Stateful` agents use a long scale-down stabilization wind
 default; `Stateless` agents may use the normal one. This reduces how often scale-in
 happens but does **not** choose which pod dies, so it is not a safety mechanism by itself.
 
-### Step 3: drain contract (`Stateful` agents)
+### Step 3: drain contract
 
 Extend the container contract:
 
 | | |
 |---|---|
-| `GET /drain?wait=<seconds>` | starts draining (idempotent) and returns when the agent is idle or `wait` elapses. Used by the `preStop` hook |
-| `SIGTERM` | also starts draining. Covers agents without `/drain` and a hook that failed |
+| `SIGTERM` | **must** start draining and exit `0` once idle or within `shutdownMarginSeconds`. A grace period alone does not make an agent finish work |
+| `GET /drain?wait=<seconds>` on the `admin` port | starts draining (idempotent) and returns when the agent is idle or `wait` elapses. Used by the `preStop` hook |
 | `GET /metrics` | adds `agent_active_sessions` (gauge) so the operator and KEDA can see per-pod load |
 
 While draining an agent rejects new sessions and, for `transport: Connection`, fails
-`/readyz`, then exits `0` once idle or when it is told to stop.
+`/readyz`.
+
+**`/drain` must not be reachable from outside the pod network.** The generated Service
+forwards the agent port and may be `NodePort` or `LoadBalancer`, so an unauthenticated
+`/drain` on that port would let any caller drain agents. Instead the operator adds a
+separate container port named `admin` (default `9101`) that is **never** included in the
+generated Service. Service ports are built from an explicit list, so this is a matter of
+not adding it. The kubelet's `httpGet` hook reaches the pod IP directly. Residual risk:
+other pods in the cluster can still reach the pod IP, so ship a `NetworkPolicy` that admits
+only the node and namespace that need it, and document that agents must bind `/drain` to
+the admin port only.
 
 The operator adds a `preStop` hook that **triggers** draining and then waits for idle. A
 Kubernetes `httpGet` hook can only issue `GET`, but it does block termination until the
 handler returns, which is why `/drain` is a blocking `GET` and needs no extra binary in the
 image. The grace-period clock starts *before* `preStop` runs and `SIGTERM` is sent only
-after it finishes, so the wait must time out before the grace period ends. The operator
-sets `wait = terminationGracePeriodSeconds - margin`; otherwise the kubelet would send
-`SIGKILL` with no useful `SIGTERM` window. Update the README line about `/readyz` to say
-that failing readiness is the drain signal for `transport: Connection` only.
+after it finishes, so the wait must end before the grace period does. That is what the
+derived `terminationGracePeriodSeconds = drainTimeoutSeconds + shutdownMarginSeconds`
+guarantees: the wait is `drainTimeoutSeconds`, leaving the full margin for `SIGTERM`.
+Update the README line about `/readyz` to say that failing readiness is the drain signal
+for `transport: Connection` only.
 
 ### Step 4 (optional, best effort): pod-deletion-cost
 
@@ -132,22 +202,21 @@ per-pod load from step 3.
 
 ## Open decisions
 
-Settled: agents may or may not keep state (default `Stateful`, `Stateless` opts out), and
-both transports are supported (declared per `AgentService`).
+Settled: agents may or may not keep state (default `Stateful`, `Stateless` opts out); both
+transports are supported and declared per `AgentService`; the drain budget is its own
+configurable setting with defaults above, not the session maximum; idle is agent-reported.
 
-1. **How long may a drain take?** Compare with `maxDurationSeconds` (default 3600). A
-   one-hour grace period blocks node drains and rollouts, and sessions that outlive it are
-   cut regardless. Does a session that outlives the grace period fail, or can the operator
-   ask the agent to checkpoint?
-2. **Routing for `Stateful` + `Request`.** Gateway with header or consistent-hash routing,
-   or per-pod addressing? This is a prerequisite for that combination (see above).
-3. **Who decides a pod is idle?** This note proposes agent-reported (steps 3 and 4). The
-   alternative, operator-inferred, is impossible while sessions are bound to services
-   rather than pods.
+1. **Routing for `Stateful` + `Request`.** Consistent hashing with pins for draining pods
+   is the leading option. Which gateway implementation, and who owns session-to-pod pins?
+2. **What happens to sessions cut by a drain timeout?** They stay `Bound` today. Should
+   agents report session end so the operator can mark them `Failed` with a reason such as
+   `DrainTimeout`?
+3. **Are the proposed caps right?** `drainTimeoutSeconds` max 3600 and
+   `shutdownMarginSeconds` 1 to 300 are placeholders.
 
 ## Non-goals
 
 - Rescheduling a session onto another agent when its agent disappears. Today such sessions
-  go to `Failed`; that behaviour is unchanged.
+  go to `Failed` only if their `AgentService` is deleted; that behaviour is unchanged.
 - Making sessions survive involuntary failures (OOM kill, node loss). Draining only covers
   voluntary disruption.
