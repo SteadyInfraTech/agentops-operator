@@ -55,6 +55,7 @@ type AgentServiceReconciler struct {
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentruntimes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentsessions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -78,6 +79,13 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 	orig := svc.DeepCopy()
+
+	// Recorded before any early return so the gauge stays current even while
+	// the workload is blocked (e.g. a missing AgentRuntime). A failure is
+	// returned so the request is retried instead of leaving a stale value.
+	if err := r.recordActiveSessions(ctx, svc); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	var rt *agentsv1alpha1.AgentRuntime
 	if ref := svc.Spec.RuntimeRef; ref != nil {
@@ -119,6 +127,21 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		r.Recorder.Eventf(svc, corev1.EventTypeNormal, "PhaseChanged", "%s -> %s", orig.Status.Phase, svc.Status.Phase)
 	}
 	return ctrl.Result{}, nil
+}
+
+// recordActiveSessions publishes how many sessions are bound to svc. It counts
+// with the same rule the scheduler uses (activeSessionsByAgent). The gauge is a
+// scaling signal, so a failed read is returned for the caller to retry rather
+// than leaving the previous, possibly stale, value in place.
+func (r *AgentServiceReconciler) recordActiveSessions(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+	var sessions agentsv1alpha1.AgentSessionList
+	if err := r.List(ctx, &sessions, client.InNamespace(svc.Namespace),
+		client.MatchingFields{indexSessionAssignedAgent: svc.Name}); err != nil {
+		return fmt.Errorf("listing AgentSessions for the active-sessions metric: %w", err)
+	}
+	active := activeSessionsByAgent(sessions.Items)[svc.Name]
+	opmetrics.AgentServiceActiveSessions.WithLabelValues(svc.Namespace, svc.Name).Set(float64(active))
+	return nil
 }
 
 func (r *AgentServiceReconciler) reconcileDeployment(ctx context.Context, svc *agentsv1alpha1.AgentService, res agent.Resolved) (*appsv1.Deployment, error) {
@@ -244,8 +267,23 @@ func (r *AgentServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Watches(&agentsv1alpha1.AgentRuntime{}, handler.EnqueueRequestsFromMapFunc(r.servicesForRuntime)).
+		// Binding or finishing a session changes the active-sessions gauge.
+		Watches(&agentsv1alpha1.AgentSession{}, handler.EnqueueRequestsFromMapFunc(servicesForSession)).
 		Named("agentservice").
 		Complete(r)
+}
+
+// servicesForSession enqueues the AgentService a changed AgentSession is (or
+// was) bound to. Finished and deleted sessions keep status.assignedAgent, so the
+// service is refreshed when a session releases its capacity.
+func servicesForSession(_ context.Context, o client.Object) []reconcile.Request {
+	sess, ok := o.(*agentsv1alpha1.AgentSession)
+	if !ok || sess.Status.AssignedAgent == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: sess.Namespace, Name: sess.Status.AssignedAgent,
+	}}}
 }
 
 // servicesForRuntime enqueues every AgentService referencing a changed AgentRuntime.
