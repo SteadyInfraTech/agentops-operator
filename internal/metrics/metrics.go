@@ -49,10 +49,41 @@ var (
 		Name: "agentops_agentsession_transitions_total",
 		Help: "Number of AgentSession phase transitions by target phase.",
 	}, []string{"namespace", "phase"})
+
+	// AgentSessionAssignments counts AgentSession scheduling outcomes per pool.
+	// "bound" is recorded once per successful placement and "unschedulable"
+	// once each time a session enters the unschedulable state (not on every
+	// retry), so the rate reflects sessions rather than requeues.
+	AgentSessionAssignments = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "agentops_agentsession_assignments_total",
+		Help: "Number of AgentSession scheduling outcomes by pool and result (bound, unschedulable).",
+	}, []string{"namespace", "pool", "result"})
 )
 
+// Values of the "result" label of AgentSessionAssignments.
+const (
+	// AssignmentBound means the session was placed onto an AgentService.
+	AssignmentBound = "bound"
+	// AssignmentUnschedulable means no target had free capacity.
+	AssignmentUnschedulable = "unschedulable"
+)
+
+// DirectPool is the "pool" label value for sessions pinned to an AgentService
+// through spec.agentServiceRef. It is not a valid Kubernetes object name, so it
+// cannot collide with a real AgentPool.
+const DirectPool = "-"
+
 func init() {
-	metrics.Registry.MustRegister(AgentServiceReplicas, AgentServicePhase, AgentPoolSessions, AgentSessionTransitions)
+	metrics.Registry.MustRegister(
+		AgentServiceReplicas, AgentServicePhase, AgentPoolSessions,
+		AgentSessionTransitions, AgentSessionAssignments,
+	)
+}
+
+// RecordSessionAssignment records one scheduling outcome for a session in the
+// given pool (use DirectPool for sessions pinned to an AgentService).
+func RecordSessionAssignment(namespace, pool, result string) {
+	AgentSessionAssignments.WithLabelValues(namespace, pool, result).Inc()
 }
 
 // DeleteAgentService removes all series for a deleted AgentService so that
@@ -66,4 +97,5 @@ func DeleteAgentService(namespace, name string) {
 // DeleteAgentPool removes all series for a deleted AgentPool.
 func DeleteAgentPool(namespace, name string) {
 	AgentPoolSessions.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "name": name})
+	AgentSessionAssignments.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "pool": name})
 }

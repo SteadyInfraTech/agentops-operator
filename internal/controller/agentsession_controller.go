@@ -37,9 +37,15 @@ import (
 	opmetrics "github.com/SteadyInfraTech/agentops-operator/internal/metrics"
 )
 
-// pendingRequeue is how often unschedulable sessions are retried in addition
-// to event-driven retries triggered by AgentService changes.
-const pendingRequeue = 15 * time.Second
+const (
+	// pendingRequeue is how often unschedulable sessions are retried in addition
+	// to event-driven retries triggered by AgentService changes.
+	pendingRequeue = 15 * time.Second
+
+	// reasonUnschedulable is the Ready condition reason of a pending session
+	// that no target can currently host.
+	reasonUnschedulable = "Unschedulable"
+)
 
 // AgentSessionReconciler schedules AgentSessions onto AgentServices and
 // manages their lifecycle (binding, expiry, completion, TTL cleanup).
@@ -101,9 +107,15 @@ func (r *AgentSessionReconciler) handlePending(ctx context.Context, sess *agents
 		return ctrl.Result{}, err
 	}
 	if target == nil {
+		// Count the outcome only when the session first becomes unschedulable;
+		// pending sessions are retried every pendingRequeue and would otherwise
+		// inflate the counter on each retry.
+		if c := meta.FindStatusCondition(sess.Status.Conditions, agentsv1alpha1.ConditionReady); c == nil || c.Reason != reasonUnschedulable {
+			opmetrics.RecordSessionAssignment(sess.Namespace, sessionPool(sess), opmetrics.AssignmentUnschedulable)
+		}
 		r.transition(sess, agentsv1alpha1.AgentSessionPending)
 		sess.Status.Message = msg
-		setSessCond(sess, metav1.ConditionFalse, "Unschedulable", msg)
+		setSessCond(sess, metav1.ConditionFalse, reasonUnschedulable, msg)
 		return ctrl.Result{RequeueAfter: pendingRequeue}, nil
 	}
 
@@ -114,7 +126,16 @@ func (r *AgentSessionReconciler) handlePending(ctx context.Context, sess *agents
 	sess.Status.Message = fmt.Sprintf("bound to AgentService %q", target.Name)
 	setSessCond(sess, metav1.ConditionTrue, "Bound", sess.Status.Message)
 	logf.FromContext(ctx).Info("session bound", "agent", target.Name)
+	opmetrics.RecordSessionAssignment(sess.Namespace, sessionPool(sess), opmetrics.AssignmentBound)
 	return expiryResult(sess, now), nil
+}
+
+// sessionPool returns the pool name used as a metrics label for a session.
+func sessionPool(sess *agentsv1alpha1.AgentSession) string {
+	if sess.Spec.PoolRef != nil {
+		return sess.Spec.PoolRef.Name
+	}
+	return opmetrics.DirectPool
 }
 
 // schedule returns the target AgentService, or nil with a human-readable reason.
