@@ -50,14 +50,16 @@ var (
 		Help: "Number of AgentSession phase transitions by target phase.",
 	}, []string{"namespace", "phase"})
 
-	// AgentSessionAssignments counts AgentSession scheduling outcomes per pool.
+	// AgentSessionAssignments counts AgentSession scheduling outcomes.
 	// "bound" is recorded once per successful placement and "unschedulable"
 	// once each time a session enters the unschedulable state (not on every
-	// retry), so the rate reflects sessions rather than requeues.
+	// retry), so the rate reflects sessions rather than requeues. The target
+	// label holds the kind of target (pool or agent), never an object name, so
+	// cardinality stays bounded no matter what sessions reference.
 	AgentSessionAssignments = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "agentops_agentsession_assignments_total",
-		Help: "Number of AgentSession scheduling outcomes by pool and result (bound, unschedulable).",
-	}, []string{"namespace", "pool", "result"})
+		Help: "Number of AgentSession scheduling outcomes by target kind (pool, agent) and result (bound, unschedulable).",
+	}, []string{"namespace", "target", "result"})
 )
 
 // Values of the "result" label of AgentSessionAssignments.
@@ -68,10 +70,13 @@ const (
 	AssignmentUnschedulable = "unschedulable"
 )
 
-// DirectPool is the "pool" label value for sessions pinned to an AgentService
-// through spec.agentServiceRef. It is not a valid Kubernetes object name, so it
-// cannot collide with a real AgentPool.
-const DirectPool = "-"
+// Values of the "target" label of AgentSessionAssignments.
+const (
+	// TargetPool is used for sessions scheduled through spec.poolRef.
+	TargetPool = "pool"
+	// TargetAgent is used for sessions pinned through spec.agentServiceRef.
+	TargetAgent = "agent"
+)
 
 func init() {
 	metrics.Registry.MustRegister(
@@ -80,10 +85,11 @@ func init() {
 	)
 }
 
-// RecordSessionAssignment records one scheduling outcome for a session in the
-// given pool (use DirectPool for sessions pinned to an AgentService).
-func RecordSessionAssignment(namespace, pool, result string) {
-	AgentSessionAssignments.WithLabelValues(namespace, pool, result).Inc()
+// RecordSessionAssignment records one scheduling outcome for a session. target
+// is TargetPool or TargetAgent and result is AssignmentBound or
+// AssignmentUnschedulable.
+func RecordSessionAssignment(namespace, target, result string) {
+	AgentSessionAssignments.WithLabelValues(namespace, target, result).Inc()
 }
 
 // DeleteAgentService removes all series for a deleted AgentService so that
@@ -97,5 +103,4 @@ func DeleteAgentService(namespace, name string) {
 // DeleteAgentPool removes all series for a deleted AgentPool.
 func DeleteAgentPool(namespace, name string) {
 	AgentPoolSessions.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "name": name})
-	AgentSessionAssignments.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "pool": name})
 }

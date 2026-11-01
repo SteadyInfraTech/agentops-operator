@@ -53,12 +53,7 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 
 .PHONY: verify-generated
 verify-generated: manifests generate ## Fail if generated code/manifests differ from what is committed (run in CI on a clean checkout).
-	@if [ -n "$$(git status --porcelain -- api config)" ]; then \
-		echo "ERROR: generated files are out of date. Run 'make manifests generate' and commit the result."; \
-		git --no-pager diff --stat -- api config; \
-		git --no-pager diff -- api config; \
-		exit 1; \
-	fi
+	@CONTROLLER_GEN="$(CONTROLLER_GEN)" bash hack/verify-generated.sh
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

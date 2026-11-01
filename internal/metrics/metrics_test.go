@@ -19,18 +19,32 @@ package metrics
 import (
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// resetAssignments drops every assignment series of a test namespace, now and
+// when the test ends. The counters live in a process-wide registry, so without
+// this a second run in the same process (go test -count=2) would see the
+// first run's values.
+func resetAssignments(t *testing.T, namespace string) {
+	t.Helper()
+	drop := func() {
+		AgentSessionAssignments.DeletePartialMatch(prometheus.Labels{"namespace": namespace})
+	}
+	drop()
+	t.Cleanup(drop)
+}
+
 // assignments returns the value of agentops_agentsession_assignments_total for
 // the given label values and whether such a series exists.
-func assignments(t *testing.T, namespace, pool, result string) (float64, bool) {
+func assignments(t *testing.T, namespace, target, result string) (float64, bool) {
 	t.Helper()
 	mfs, err := ctrlmetrics.Registry.Gather()
 	if err != nil {
 		t.Fatalf("gathering metrics: %v", err)
 	}
-	want := map[string]string{"namespace": namespace, "pool": pool, "result": result}
+	want := map[string]string{"namespace": namespace, "target": target, "result": result}
 	for _, mf := range mfs {
 		if mf.GetName() != "agentops_agentsession_assignments_total" {
 			continue
@@ -51,35 +65,36 @@ func assignments(t *testing.T, namespace, pool, result string) (float64, bool) {
 }
 
 func TestRecordSessionAssignment(t *testing.T) {
-	const ns, pool = "metrics-test", "pool-a"
+	const ns = "metrics-test"
+	resetAssignments(t, ns)
 
-	RecordSessionAssignment(ns, pool, AssignmentBound)
-	RecordSessionAssignment(ns, pool, AssignmentBound)
-	RecordSessionAssignment(ns, pool, AssignmentUnschedulable)
-	RecordSessionAssignment(ns, DirectPool, AssignmentBound)
+	RecordSessionAssignment(ns, TargetPool, AssignmentBound)
+	RecordSessionAssignment(ns, TargetPool, AssignmentBound)
+	RecordSessionAssignment(ns, TargetPool, AssignmentUnschedulable)
+	RecordSessionAssignment(ns, TargetAgent, AssignmentBound)
 
-	if got, ok := assignments(t, ns, pool, AssignmentBound); !ok || got != 2 {
-		t.Errorf("bound for %s/%s = %v (exists=%v), want 2", ns, pool, got, ok)
+	if got, ok := assignments(t, ns, TargetPool, AssignmentBound); !ok || got != 2 {
+		t.Errorf("bound for pool targets in %s = %v (exists=%v), want 2", ns, got, ok)
 	}
-	if got, ok := assignments(t, ns, pool, AssignmentUnschedulable); !ok || got != 1 {
-		t.Errorf("unschedulable for %s/%s = %v (exists=%v), want 1", ns, pool, got, ok)
+	if got, ok := assignments(t, ns, TargetPool, AssignmentUnschedulable); !ok || got != 1 {
+		t.Errorf("unschedulable for pool targets in %s = %v (exists=%v), want 1", ns, got, ok)
 	}
-	if got, ok := assignments(t, ns, DirectPool, AssignmentBound); !ok || got != 1 {
-		t.Errorf("bound for direct sessions = %v (exists=%v), want 1", got, ok)
+	if got, ok := assignments(t, ns, TargetAgent, AssignmentBound); !ok || got != 1 {
+		t.Errorf("bound for agent targets in %s = %v (exists=%v), want 1", ns, got, ok)
 	}
 }
 
-func TestDeleteAgentPoolDropsAssignmentSeries(t *testing.T) {
-	const ns, pool = "metrics-test-delete", "pool-b"
+// Reconciling a pool that does not exist must not erase assignment outcomes:
+// the pool controller also reconciles pool names referenced by sessions whose
+// pool is missing, and those sessions are counted exactly once.
+func TestDeleteAgentPoolKeepsAssignmentSeries(t *testing.T) {
+	const ns = "metrics-test-delete"
+	resetAssignments(t, ns)
 
-	RecordSessionAssignment(ns, pool, AssignmentBound)
-	RecordSessionAssignment(ns, DirectPool, AssignmentBound)
-	DeleteAgentPool(ns, pool)
+	RecordSessionAssignment(ns, TargetPool, AssignmentUnschedulable)
+	DeleteAgentPool(ns, "missing-pool")
 
-	if _, ok := assignments(t, ns, pool, AssignmentBound); ok {
-		t.Errorf("series for deleted pool %s/%s still exported", ns, pool)
-	}
-	if _, ok := assignments(t, ns, DirectPool, AssignmentBound); !ok {
-		t.Errorf("deleting pool %s/%s removed the direct-session series", ns, pool)
+	if got, ok := assignments(t, ns, TargetPool, AssignmentUnschedulable); !ok || got != 1 {
+		t.Errorf("unschedulable for pool targets in %s = %v (exists=%v) after DeleteAgentPool, want 1", ns, got, ok)
 	}
 }
