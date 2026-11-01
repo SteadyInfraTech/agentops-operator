@@ -81,8 +81,11 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	orig := svc.DeepCopy()
 
 	// Recorded before any early return so the gauge stays current even while
-	// the workload is blocked (e.g. a missing AgentRuntime).
-	r.recordActiveSessions(ctx, svc)
+	// the workload is blocked (e.g. a missing AgentRuntime). A failure is
+	// returned so the request is retried instead of leaving a stale value.
+	if err := r.recordActiveSessions(ctx, svc); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	var rt *agentsv1alpha1.AgentRuntime
 	if ref := svc.Spec.RuntimeRef; ref != nil {
@@ -127,17 +130,18 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 // recordActiveSessions publishes how many sessions are bound to svc. It counts
-// with the same rule the scheduler uses (activeSessionsByAgent). The value is
-// informational, so a failed read is logged and does not fail the reconcile.
-func (r *AgentServiceReconciler) recordActiveSessions(ctx context.Context, svc *agentsv1alpha1.AgentService) {
+// with the same rule the scheduler uses (activeSessionsByAgent). The gauge is a
+// scaling signal, so a failed read is returned for the caller to retry rather
+// than leaving the previous, possibly stale, value in place.
+func (r *AgentServiceReconciler) recordActiveSessions(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
 	var sessions agentsv1alpha1.AgentSessionList
 	if err := r.List(ctx, &sessions, client.InNamespace(svc.Namespace),
 		client.MatchingFields{indexSessionAssignedAgent: svc.Name}); err != nil {
-		logf.FromContext(ctx).Error(err, "listing AgentSessions for the active-sessions metric")
-		return
+		return fmt.Errorf("listing AgentSessions for the active-sessions metric: %w", err)
 	}
 	active := activeSessionsByAgent(sessions.Items)[svc.Name]
 	opmetrics.AgentServiceActiveSessions.WithLabelValues(svc.Namespace, svc.Name).Set(float64(active))
+	return nil
 }
 
 func (r *AgentServiceReconciler) reconcileDeployment(ctx context.Context, svc *agentsv1alpha1.AgentService, res agent.Resolved) (*appsv1.Deployment, error) {
