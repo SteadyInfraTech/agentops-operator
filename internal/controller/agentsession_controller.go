@@ -37,9 +37,15 @@ import (
 	opmetrics "github.com/SteadyInfraTech/agentops-operator/internal/metrics"
 )
 
-// pendingRequeue is how often unschedulable sessions are retried in addition
-// to event-driven retries triggered by AgentService changes.
-const pendingRequeue = 15 * time.Second
+const (
+	// pendingRequeue is how often unschedulable sessions are retried in addition
+	// to event-driven retries triggered by AgentService changes.
+	pendingRequeue = 15 * time.Second
+
+	// reasonUnschedulable is the Ready condition reason of a pending session
+	// that no target can currently host.
+	reasonUnschedulable = "Unschedulable"
+)
 
 // AgentSessionReconciler schedules AgentSessions onto AgentServices and
 // manages their lifecycle (binding, expiry, completion, TTL cleanup).
@@ -84,10 +90,38 @@ func (r *AgentSessionReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.patchStatus(ctx, orig, sess); err != nil {
+	patched, err := r.patchStatus(ctx, orig, sess)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// Record the scheduling outcome only once the status change is persisted, so
+	// a failed patch followed by a retry is counted once and a session deleted
+	// before the patch is not counted at all.
+	if patched {
+		if outcome := assignmentOutcome(orig, sess); outcome != "" {
+			opmetrics.RecordSessionAssignment(sess.Namespace, sessionTarget(sess), outcome)
+		}
+	}
 	return res, nil
+}
+
+// assignmentOutcome derives the scheduling outcome, if any, from the status
+// transition a reconcile applied. "unschedulable" is reported only when the
+// session first becomes unschedulable: pending sessions are retried every
+// pendingRequeue and would otherwise inflate the counter on each retry.
+func assignmentOutcome(orig, sess *agentsv1alpha1.AgentSession) string {
+	switch {
+	case orig.Status.Phase != agentsv1alpha1.AgentSessionBound && sess.Status.Phase == agentsv1alpha1.AgentSessionBound:
+		return opmetrics.AssignmentBound
+	case !isUnschedulable(orig) && isUnschedulable(sess):
+		return opmetrics.AssignmentUnschedulable
+	}
+	return ""
+}
+
+func isUnschedulable(sess *agentsv1alpha1.AgentSession) bool {
+	c := meta.FindStatusCondition(sess.Status.Conditions, agentsv1alpha1.ConditionReady)
+	return c != nil && c.Reason == reasonUnschedulable
 }
 
 func (r *AgentSessionReconciler) handlePending(ctx context.Context, sess *agentsv1alpha1.AgentSession, now time.Time) (ctrl.Result, error) {
@@ -103,7 +137,7 @@ func (r *AgentSessionReconciler) handlePending(ctx context.Context, sess *agents
 	if target == nil {
 		r.transition(sess, agentsv1alpha1.AgentSessionPending)
 		sess.Status.Message = msg
-		setSessCond(sess, metav1.ConditionFalse, "Unschedulable", msg)
+		setSessCond(sess, metav1.ConditionFalse, reasonUnschedulable, msg)
 		return ctrl.Result{RequeueAfter: pendingRequeue}, nil
 	}
 
@@ -115,6 +149,16 @@ func (r *AgentSessionReconciler) handlePending(ctx context.Context, sess *agents
 	setSessCond(sess, metav1.ConditionTrue, "Bound", sess.Status.Message)
 	logf.FromContext(ctx).Info("session bound", "agent", target.Name)
 	return expiryResult(sess, now), nil
+}
+
+// sessionTarget returns the target kind used as a metrics label for a session.
+// It is deliberately not an object name: pool and agent names are user input
+// and may not even exist, which would make the label unbounded.
+func sessionTarget(sess *agentsv1alpha1.AgentSession) string {
+	if sess.Spec.PoolRef != nil {
+		return opmetrics.TargetPool
+	}
+	return opmetrics.TargetAgent
 }
 
 // schedule returns the target AgentService, or nil with a human-readable reason.
@@ -219,11 +263,17 @@ func (r *AgentSessionReconciler) transition(sess *agentsv1alpha1.AgentSession, p
 	sess.Status.Phase = phase
 }
 
-func (r *AgentSessionReconciler) patchStatus(ctx context.Context, orig, sess *agentsv1alpha1.AgentSession) error {
+// patchStatus persists the status change and reports whether a patch was
+// actually applied. It returns false when there was nothing to patch or the
+// session no longer exists.
+func (r *AgentSessionReconciler) patchStatus(ctx context.Context, orig, sess *agentsv1alpha1.AgentSession) (bool, error) {
 	if equality.Semantic.DeepEqual(orig.Status, sess.Status) {
-		return nil
+		return false, nil
 	}
-	return client.IgnoreNotFound(r.Status().Patch(ctx, sess, client.MergeFrom(orig)))
+	if err := r.Status().Patch(ctx, sess, client.MergeFrom(orig)); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return true, nil
 }
 
 func (r *AgentSessionReconciler) now() time.Time {

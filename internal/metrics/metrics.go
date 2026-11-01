@@ -49,10 +49,47 @@ var (
 		Name: "agentops_agentsession_transitions_total",
 		Help: "Number of AgentSession phase transitions by target phase.",
 	}, []string{"namespace", "phase"})
+
+	// AgentSessionAssignments counts AgentSession scheduling outcomes.
+	// "bound" is recorded once per successful placement and "unschedulable"
+	// once each time a session enters the unschedulable state (not on every
+	// retry), so the rate reflects sessions rather than requeues. The target
+	// label holds the kind of target (pool or agent), never an object name, so
+	// cardinality stays bounded no matter what sessions reference.
+	AgentSessionAssignments = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "agentops_agentsession_assignments_total",
+		Help: "Number of AgentSession scheduling outcomes by target kind (pool, agent) and result (bound, unschedulable).",
+	}, []string{"namespace", "target", "result"})
+)
+
+// Values of the "result" label of AgentSessionAssignments.
+const (
+	// AssignmentBound means the session was placed onto an AgentService.
+	AssignmentBound = "bound"
+	// AssignmentUnschedulable means no target had free capacity.
+	AssignmentUnschedulable = "unschedulable"
+)
+
+// Values of the "target" label of AgentSessionAssignments.
+const (
+	// TargetPool is used for sessions scheduled through spec.poolRef.
+	TargetPool = "pool"
+	// TargetAgent is used for sessions pinned through spec.agentServiceRef.
+	TargetAgent = "agent"
 )
 
 func init() {
-	metrics.Registry.MustRegister(AgentServiceReplicas, AgentServicePhase, AgentPoolSessions, AgentSessionTransitions)
+	metrics.Registry.MustRegister(
+		AgentServiceReplicas, AgentServicePhase, AgentPoolSessions,
+		AgentSessionTransitions, AgentSessionAssignments,
+	)
+}
+
+// RecordSessionAssignment records one scheduling outcome for a session. target
+// is TargetPool or TargetAgent and result is AssignmentBound or
+// AssignmentUnschedulable.
+func RecordSessionAssignment(namespace, target, result string) {
+	AgentSessionAssignments.WithLabelValues(namespace, target, result).Inc()
 }
 
 // DeleteAgentService removes all series for a deleted AgentService so that

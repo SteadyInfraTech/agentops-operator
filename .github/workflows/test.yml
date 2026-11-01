@@ -17,6 +17,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Verify generated files are up to date
+        run: make verify-generated
+
       - name: Running Tests
         run: |
           go mod tidy
