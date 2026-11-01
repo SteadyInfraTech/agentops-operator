@@ -1,0 +1,14 @@
+apiVersion: agents.agentops.io/v1alpha1
+kind: AgentSession
+metadata:
+  name: session-user-42
+  labels:
+    app.kubernetes.io/name: agentops-operator
+spec:
+  poolRef:
+    name: support
+  userID: user-42
+  parameters:
+    locale: en-US
+  maxDurationSeconds: 1800
+  ttlSecondsAfterFinished: 600

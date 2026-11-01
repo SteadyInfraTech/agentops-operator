@@ -1,0 +1,26 @@
+apiVersion: agents.agentops.io/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: echo-runtime
+  labels:
+    app.kubernetes.io/name: agentops-operator
+spec:
+  framework: custom
+  image: ghcr.io/steadyinfratech/echo-agent:latest
+  port: 8080
+  env:
+    - name: LOG_LEVEL
+      value: info
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  probes:
+    livenessPath: /healthz
+    readinessPath: /readyz
+    startupFailureThreshold: 30
+  metrics:
+    enabled: true
+    path: /metrics

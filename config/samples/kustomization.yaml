@@ -1,0 +1,7 @@
+## Append samples of your project ##
+resources:
+- agents_v1alpha1_agentruntime.yaml
+- agents_v1alpha1_agentservice.yaml
+- agents_v1alpha1_agentpool.yaml
+- agents_v1alpha1_agentsession.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

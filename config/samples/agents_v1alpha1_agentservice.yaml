@@ -1,0 +1,49 @@
+# Secret holding the LLM API key, consumed via secretKeyRef (never inlined).
+# Replace the value or create the Secret out-of-band (e.g. External Secrets).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-credentials
+type: Opaque
+stringData:
+  apiKey: replace-me
+---
+apiVersion: agents.agentops.io/v1alpha1
+kind: AgentService
+metadata:
+  name: support-agent
+  labels:
+    app.kubernetes.io/name: agentops-operator
+    agentops.io/pool: support
+spec:
+  runtimeRef:
+    name: echo-runtime
+  model:
+    provider: openai
+    name: gpt-4o-mini
+    apiKeySecretRef:
+      name: llm-credentials
+      key: apiKey
+  systemPrompt: You are a helpful customer support agent.
+  tools: [search, ticketing]
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+---
+apiVersion: agents.agentops.io/v1alpha1
+kind: AgentService
+metadata:
+  name: billing-agent
+  labels:
+    app.kubernetes.io/name: agentops-operator
+    agentops.io/pool: support
+spec:
+  runtimeRef:
+    name: echo-runtime
+  replicas: 2
+  model:
+    provider: anthropic
+    name: claude-sonnet-4
+  systemPrompt: You answer billing questions.

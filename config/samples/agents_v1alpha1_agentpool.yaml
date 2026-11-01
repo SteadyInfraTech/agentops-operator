@@ -1,0 +1,11 @@
+apiVersion: agents.agentops.io/v1alpha1
+kind: AgentPool
+metadata:
+  name: support
+  labels:
+    app.kubernetes.io/name: agentops-operator
+spec:
+  selector:
+    matchLabels:
+      agentops.io/pool: support
+  maxSessionsPerReplica: 10
