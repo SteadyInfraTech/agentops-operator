@@ -1,6 +1,7 @@
 # Design note: draining agents without dropping sessions
 
-Status: **proposal, open decisions below**. Nothing here is implemented.
+Status: **step 1 (rollout and `preStop` baseline) is implemented; everything else is a
+proposal**, with open decisions below.
 
 ## Problem
 
@@ -12,10 +13,12 @@ Anything that removes an agent pod can cut off a live `AgentSession`:
 | Rolling update of the Deployment | the Deployment controller |
 | Node drain / eviction | the scheduler / admin |
 
-Today the operator does nothing about this:
+Step 1 (implemented) added `maxUnavailable: 0` and a 5 s `preStop` sleep, so rollouts keep
+capacity and endpoint removal can propagate. It does not keep sessions alive. What remains
+true today:
 
-- Generated pods set no `terminationGracePeriodSeconds`, so Kubernetes' default of 30 s
-  applies, and there is no `preStop` hook.
+- Generated pods leave `terminationGracePeriodSeconds` unset, so Kubernetes' default of
+  30 s applies (including the 5 s sleep), and there is no drain hook.
 - The container contract in the README says `/readyz` returns 503 "while warming up /
   draining", but nothing tells an agent *when* to drain or for how long.
 - The operator cannot tell which pod holds which session. A session binds to an
@@ -143,16 +146,21 @@ to the same pod. It also needs agent changes, so it is a fallback, not the plan.
 
 ### Step 1: baseline for unmodified agents (no agent change)
 
-- `strategy.rollingUpdate.maxUnavailable: 0`, so a rollout never lowers capacity below the
-  desired count.
-- A short `preStop` sleep so endpoint removal propagates before the container is stopped.
+Implemented:
+
+- `strategy.rollingUpdate.maxUnavailable: 0` (with `maxSurge: 25%`), so a rollout never
+  lowers capacity below the desired count.
+- A 5 s `preStop` sleep so endpoint removal propagates before the container is stopped.
   The native `sleep` action needs no binary in the image: beta since Kubernetes 1.30, GA in
-  1.34. Detecting cluster support is an open detail.
+  1.34. The operator requires Kubernetes 1.30+, so it is always set.
 - `terminationGracePeriodSeconds` stays at Kubernetes' default. Raising it by default
   would make every rollout wait the full period for any agent that ignores `SIGTERM`, which
   is common for a process running as PID 1 without a handler.
-- The `DrainSafe` condition above, and a README section stating what is and is not
-  guaranteed for an unmodified agent.
+- A README section stating what is and is not guaranteed for an unmodified agent.
+
+Not yet implemented: `spec.sessions` (`state`, `transport`) and the `DrainSafe` condition
+above. They change the API, so they need regenerated CRDs and deepcopy code and ship as
+their own change.
 
 ### Step 2: scale on sessions, and scale in slowly (no agent change)
 
@@ -234,7 +242,14 @@ consistent hashing as the placement strategy; idle is agent-reported when draini
    session-to-pod pins (and the router honors them), because then it knows which sessions
    a terminating pod held. Otherwise sessions stay `Bound` until `maxDurationSeconds` or
    the client completes them. Agent reporting stays an opt-in extra.
-3. **Cluster support for the `preStop` sleep.** Detect support, or require Kubernetes 1.30+?
+3. ~~Cluster support for the `preStop` sleep.~~ Settled: the operator requires Kubernetes
+   1.30+, so the sleep is always set and no runtime detection is needed. Step 1 is
+   implemented. The sleep also needs the `PodLifecycleSleepAction` feature gate (beta and
+   on by default in 1.30 to 1.33, GA in 1.34) on every kube-apiserver and on the kubelet of
+   every node that runs agent pods; the version-skew policy allows kubelets older than the
+   API server. If a component cannot honor it, the delay is skipped and pods terminate as
+   they did before step 1, so nothing gets worse. Runtime detection was rejected: it would
+   need `nodes` RBAC and still could not see a disabled gate.
 4. **Are the proposed caps right?** `drain.timeoutSeconds` max 3600 and
    `drain.shutdownMarginSeconds` 1 to 300 are placeholders.
 
