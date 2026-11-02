@@ -2,6 +2,7 @@
 
 A Kubernetes operator for running **AI agents as microservices**. Built with Go and
 [Kubebuilder](https://book.kubebuilder.io) (controller-runtime v0.20, Kubernetes 1.32 APIs).
+**Requires Kubernetes 1.30 or newer** (generated pods use the native `preStop` sleep action).
 
 You describe an agent declaratively — image or runtime, model, system prompt, tools,
 scaling policy — and the operator turns it into a hardened `Deployment`, a `Service`,
@@ -84,6 +85,24 @@ Environment: `AGENT_NAME`, `AGENT_NAMESPACE`, `AGENT_MODEL_PROVIDER`, `AGENT_MOD
 The container must listen on a port named `http` (default 8080), run as non-root,
 and tolerate a read-only root filesystem (`/tmp` is an `emptyDir`).
 [`examples/echo-agent`](examples/echo-agent) is a minimal reference implementation.
+
+## Rollouts and termination
+
+The operator assumes agents know nothing about AgentOps, so these defaults need no agent
+changes:
+
+- **Rollouts never lower capacity.** The Deployment uses `maxUnavailable: 0` (with
+  `maxSurge: 25%`): a replacement pod is started before an old one is retired.
+- **Short `preStop` sleep (5 s).** After a pod is marked terminating, the container keeps
+  running briefly so its removal from the Service endpoints can propagate before it stops
+  accepting connections.
+- **The termination grace period is Kubernetes' default (30 s)**, which includes the sleep.
+
+What this does **not** do: it does not keep a session alive while its pod is removed. An
+agent that handles `SIGTERM` finishes what it can within the grace period; one that does
+not is stopped at the end of it. Scale-in and node drains can still cut live sessions.
+Making that safe is designed in
+[docs/design/session-draining.md](docs/design/session-draining.md) and is not implemented yet.
 
 ## Security defaults
 

@@ -143,16 +143,21 @@ to the same pod. It also needs agent changes, so it is a fallback, not the plan.
 
 ### Step 1: baseline for unmodified agents (no agent change)
 
-- `strategy.rollingUpdate.maxUnavailable: 0`, so a rollout never lowers capacity below the
-  desired count.
-- A short `preStop` sleep so endpoint removal propagates before the container is stopped.
+Implemented:
+
+- `strategy.rollingUpdate.maxUnavailable: 0` (with `maxSurge: 25%`), so a rollout never
+  lowers capacity below the desired count.
+- A 5 s `preStop` sleep so endpoint removal propagates before the container is stopped.
   The native `sleep` action needs no binary in the image: beta since Kubernetes 1.30, GA in
-  1.34. Detecting cluster support is an open detail.
+  1.34. The operator requires Kubernetes 1.30+, so it is always set.
 - `terminationGracePeriodSeconds` stays at Kubernetes' default. Raising it by default
   would make every rollout wait the full period for any agent that ignores `SIGTERM`, which
   is common for a process running as PID 1 without a handler.
-- The `DrainSafe` condition above, and a README section stating what is and is not
-  guaranteed for an unmodified agent.
+- A README section stating what is and is not guaranteed for an unmodified agent.
+
+Not yet implemented: `spec.sessions` (`state`, `transport`) and the `DrainSafe` condition
+above. They change the API, so they need regenerated CRDs and deepcopy code and ship as
+their own change.
 
 ### Step 2: scale on sessions, and scale in slowly (no agent change)
 
@@ -234,7 +239,9 @@ consistent hashing as the placement strategy; idle is agent-reported when draini
    session-to-pod pins (and the router honors them), because then it knows which sessions
    a terminating pod held. Otherwise sessions stay `Bound` until `maxDurationSeconds` or
    the client completes them. Agent reporting stays an opt-in extra.
-3. **Cluster support for the `preStop` sleep.** Detect support, or require Kubernetes 1.30+?
+3. ~~Cluster support for the `preStop` sleep.~~ Settled: the operator requires Kubernetes
+   1.30+, so the sleep is always set and no runtime detection is needed. Step 1 is
+   implemented.
 4. **Are the proposed caps right?** `drain.timeoutSeconds` max 3600 and
    `drain.shutdownMarginSeconds` 1 to 300 are placeholders.
 

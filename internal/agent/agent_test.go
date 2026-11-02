@@ -125,6 +125,53 @@ func TestMutateDeploymentRespectsHPA(t *testing.T) {
 	}
 }
 
+func TestMutateDeploymentRolloutAndTermination(t *testing.T) {
+	svc := &agentsv1alpha1.AgentService{
+		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"},
+		Spec:       agentsv1alpha1.AgentServiceSpec{Image: "x"},
+	}
+	r := Resolve(svc, nil)
+	dep := &appsv1.Deployment{}
+	MutateDeployment(dep, svc, r)
+
+	st := dep.Spec.Strategy
+	if st.Type != appsv1.RollingUpdateDeploymentStrategyType || st.RollingUpdate == nil {
+		t.Fatalf("strategy = %+v, want RollingUpdate", st)
+	}
+	if got := st.RollingUpdate.MaxUnavailable; got == nil || got.IntValue() != 0 {
+		t.Errorf("maxUnavailable = %v, want 0 so a rollout never lowers capacity", got)
+	}
+	if got := st.RollingUpdate.MaxSurge; got == nil || got.String() != "25%" {
+		t.Errorf("maxSurge = %v, want 25%% (must be non-zero when maxUnavailable is 0)", got)
+	}
+
+	c := dep.Spec.Template.Spec.Containers[0]
+	if c.Lifecycle == nil || c.Lifecycle.PreStop == nil || c.Lifecycle.PreStop.Sleep == nil {
+		t.Fatalf("lifecycle = %+v, want a native preStop sleep action", c.Lifecycle)
+	}
+	if got := c.Lifecycle.PreStop.Sleep.Seconds; got != preStopSleepSeconds {
+		t.Errorf("preStop sleep = %ds, want %ds", got, preStopSleepSeconds)
+	}
+	if c.Lifecycle.PreStop.Exec != nil || c.Lifecycle.PreStop.HTTPGet != nil {
+		t.Errorf("preStop must use only the native sleep: the image may not contain a shell or sleep binary")
+	}
+
+	// The grace period is left to Kubernetes' default until draining is opt-in:
+	// raising it would make rollouts wait for any agent that ignores SIGTERM.
+	if dep.Spec.Template.Spec.TerminationGracePeriodSeconds != nil {
+		t.Errorf("terminationGracePeriodSeconds = %d, want unset (Kubernetes default)",
+			*dep.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	}
+
+	// Reconciling again must not change anything, or CreateOrUpdate would
+	// issue an update on every pass.
+	before := dep.DeepCopy()
+	MutateDeployment(dep, svc, r)
+	if !equality.Semantic.DeepEqual(before.Spec, dep.Spec) {
+		t.Errorf("MutateDeployment is not idempotent")
+	}
+}
+
 func TestMutateDeploymentMetricsToggle(t *testing.T) {
 	svc := &agentsv1alpha1.AgentService{
 		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"},
