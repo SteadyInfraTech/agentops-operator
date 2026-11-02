@@ -209,8 +209,11 @@ func main() {
 
 	kedaAvailable, err := controller.DetectKEDA(mgr.GetConfig())
 	if err != nil {
-		// Fail closed: without KEDA the operator keeps managing a plain HPA.
-		setupLog.Error(err, "unable to detect KEDA, scaling on sessions is disabled")
+		// A missing KEDA group is (false, nil); an error means discovery failed.
+		// Do not guess: a wrong "false" would make the operator create an HPA
+		// next to a ScaledObject it already owns.
+		setupLog.Error(err, "unable to detect KEDA")
+		os.Exit(1)
 	}
 	setupLog.Info("KEDA detection", "available", kedaAvailable, "prometheusAddress", prometheusAddress)
 

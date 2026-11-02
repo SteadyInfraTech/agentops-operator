@@ -17,6 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"testing"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -25,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentsv1alpha1 "github.com/SteadyInfraTech/agentops-operator/api/v1alpha1"
 	"github.com/SteadyInfraTech/agentops-operator/internal/agent"
@@ -96,6 +100,36 @@ var _ = Describe("AgentService scaling on sessions with KEDA", func() {
 		Eventually(gone(scaledObject(ns, "a1")), timeout, interval).Should(BeTrue())
 	})
 
+	It("does not create a ScaledObject while someone else's HPA targets the Deployment", func() {
+		ns := newNamespace()
+		theirs := &autoscalingv2.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{Name: "their-hpa", Namespace: ns},
+			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "a3"},
+				MinReplicas:    ptr.To[int32](1),
+				MaxReplicas:    2,
+			},
+		}
+		Expect(k8sClient.Create(ctx, theirs)).To(Succeed())
+		Expect(k8sClient.Create(ctx, &agentsv1alpha1.AgentService{
+			ObjectMeta: metav1.ObjectMeta{Name: "a3", Namespace: ns},
+			Spec: agentsv1alpha1.AgentServiceSpec{
+				Image: "ghcr.io/example/agent:1.0",
+				Autoscaling: &agentsv1alpha1.AutoscalingSpec{
+					Enabled: true, MinReplicas: 1, MaxReplicas: 4, TargetSessionsPerPod: ptr.To[int32](5),
+				},
+			},
+		})).To(Succeed())
+
+		By("leaving their HPA alone and creating no ScaledObject")
+		Consistently(gone(scaledObject(ns, "a3")), "3s", interval).Should(BeTrue())
+		Expect(hpa(ns, "their-hpa")()).To(Succeed())
+
+		By("creating the ScaledObject once their HPA is gone")
+		Expect(k8sClient.Delete(ctx, theirs)).To(Succeed())
+		Eventually(scaledObject(ns, "a3"), timeout, interval).Should(Succeed())
+	})
+
 	It("keeps the HPA and leaves a ScaledObject alone when no target is set", func() {
 		ns := newNamespace()
 		Expect(k8sClient.Create(ctx, &agentsv1alpha1.AgentService{
@@ -109,3 +143,50 @@ var _ = Describe("AgentService scaling on sessions with KEDA", func() {
 		Consistently(gone(scaledObject(ns, "a2")), "2s", interval).Should(BeTrue())
 	})
 })
+
+func TestIsForeignHPA(t *testing.T) {
+	svc := &agentsv1alpha1.AgentService{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns", UID: "svc-uid"}}
+	hpa := func(kind, target string, owners ...metav1.OwnerReference) *autoscalingv2.HorizontalPodAutoscaler {
+		return &autoscalingv2.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "ns", OwnerReferences: owners},
+			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{Kind: kind, Name: target},
+			},
+		}
+	}
+	controller := true
+	ours := metav1.OwnerReference{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "AgentService", Name: "a", UID: "svc-uid", Controller: &controller}
+	keda := metav1.OwnerReference{APIVersion: "keda.sh/v1alpha1", Kind: "ScaledObject", Name: "a", UID: "so-uid", Controller: &controller}
+
+	tests := []struct {
+		name string
+		hpa  *autoscalingv2.HorizontalPodAutoscaler
+		want bool
+	}{
+		{"user HPA on the Deployment", hpa("Deployment", "a"), true},
+		{"HPA on another Deployment", hpa("Deployment", "b"), false},
+		{"HPA on another kind", hpa("StatefulSet", "a"), false},
+		{"HPA owned by the operator", hpa("Deployment", "a", ours), false},
+		{"HPA created by KEDA", hpa("Deployment", "a", keda), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isForeignHPA(tt.hpa, svc); got != tt.want {
+				t.Errorf("isForeignHPA = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServicesForHPA(t *testing.T) {
+	h := &autoscalingv2.HorizontalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Namespace: "ns"}}
+	h.Spec.ScaleTargetRef = autoscalingv2.CrossVersionObjectReference{Kind: "Deployment", Name: "a"}
+	want := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns", Name: "a"}}
+	if got := servicesForHPA(context.Background(), h); len(got) != 1 || got[0] != want {
+		t.Errorf("got %v, want [%v]", got, want)
+	}
+	h.Spec.ScaleTargetRef.Kind = "StatefulSet"
+	if got := servicesForHPA(context.Background(), h); len(got) != 0 {
+		t.Errorf("non-Deployment target enqueued %v", got)
+	}
+}
