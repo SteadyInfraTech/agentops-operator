@@ -1,6 +1,7 @@
 # Design note: draining agents without dropping sessions
 
-Status: **proposal, open decisions below**. Nothing here is implemented.
+Status: **step 1 (rollout and `preStop` baseline) is implemented; everything else is a
+proposal**, with open decisions below.
 
 ## Problem
 
@@ -12,10 +13,12 @@ Anything that removes an agent pod can cut off a live `AgentSession`:
 | Rolling update of the Deployment | the Deployment controller |
 | Node drain / eviction | the scheduler / admin |
 
-Today the operator does nothing about this:
+Step 1 (implemented) added `maxUnavailable: 0` and a 5 s `preStop` sleep, so rollouts keep
+capacity and endpoint removal can propagate. It does not keep sessions alive. What remains
+true today:
 
-- Generated pods set no `terminationGracePeriodSeconds`, so Kubernetes' default of 30 s
-  applies, and there is no `preStop` hook.
+- Generated pods leave `terminationGracePeriodSeconds` unset, so Kubernetes' default of
+  30 s applies (including the 5 s sleep), and there is no drain hook.
 - The container contract in the README says `/readyz` returns 503 "while warming up /
   draining", but nothing tells an agent *when* to drain or for how long.
 - The operator cannot tell which pod holds which session. A session binds to an
@@ -241,7 +244,12 @@ consistent hashing as the placement strategy; idle is agent-reported when draini
    the client completes them. Agent reporting stays an opt-in extra.
 3. ~~Cluster support for the `preStop` sleep.~~ Settled: the operator requires Kubernetes
    1.30+, so the sleep is always set and no runtime detection is needed. Step 1 is
-   implemented.
+   implemented. The sleep also needs the `PodLifecycleSleepAction` feature gate (beta and
+   on by default in 1.30 to 1.33, GA in 1.34) on every kube-apiserver and on the kubelet of
+   every node that runs agent pods; the version-skew policy allows kubelets older than the
+   API server. If a component cannot honor it, the delay is skipped and pods terminate as
+   they did before step 1, so nothing gets worse. Runtime detection was rejected: it would
+   need `nodes` RBAC and still could not see a disabled gate.
 4. **Are the proposed caps right?** `drain.timeoutSeconds` max 3600 and
    `drain.shutdownMarginSeconds` 1 to 300 are placeholders.
 

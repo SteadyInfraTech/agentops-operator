@@ -2,7 +2,11 @@
 
 A Kubernetes operator for running **AI agents as microservices**. Built with Go and
 [Kubebuilder](https://book.kubebuilder.io) (controller-runtime v0.20, Kubernetes 1.32 APIs).
-**Requires Kubernetes 1.30 or newer** (generated pods use the native `preStop` sleep action).
+**Requires Kubernetes 1.30 or newer** (generated pods use the native `preStop` sleep
+action). That means the API server **and** the kubelet of every node that runs agent pods,
+with the `PodLifecycleSleepAction` feature gate not disabled (it is on by default as beta in
+1.30 to 1.33 and GA in 1.34). If a component cannot honor it, the 5 s delay is skipped and
+pods terminate as they did before; nothing breaks.
 
 You describe an agent declaratively — image or runtime, model, system prompt, tools,
 scaling policy — and the operator turns it into a hardened `Deployment`, a `Service`,

@@ -46,6 +46,9 @@ const (
 	// propagate before the agent stops accepting connections. It uses the
 	// native sleep action, which needs no binary in the agent image and is
 	// why the operator requires Kubernetes 1.30+ (beta there, GA in 1.34).
+	// This needs the PodLifecycleSleepAction gate on the API server and on the
+	// kubelet of every node running agents; where it is unavailable the delay
+	// is silently skipped and pods terminate without it, as they did before.
 	// The time counts against the pod's termination grace period.
 	preStopSleepSeconds int64 = 5
 )
