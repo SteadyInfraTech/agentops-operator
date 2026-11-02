@@ -86,7 +86,7 @@ The operator reports this instead of pretending: a `DrainSafe` condition on the
 
 | Reason | When |
 |---|---|
-| `BestEffortOnly` | `Stateless` + `Request` on an unmodified agent: nothing is lost, but an in-flight request can be |
+| `BestEffortOnly` | `Stateless` + `Request` on an unmodified agent: no in-memory session state is lost, but an in-flight request can be interrupted |
 | `DrainNotEnabled` | `Connection` on an unmodified agent |
 | `RequestTransportWithoutRouting` | `Stateful` + `Request`, until session-aware routing exists |
 
