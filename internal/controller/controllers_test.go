@@ -129,6 +129,14 @@ var _ = Describe("AgentService", func() {
 			return k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "support"}, hpa)
 		}, timeout, interval).Should(Succeed())
 		Expect(hpa.Spec.MaxReplicas).To(Equal(int32(4)))
+		Expect(hpa.Spec.Behavior).NotTo(BeNil(), "Stateful is the default")
+		sd := hpa.Spec.Behavior.ScaleDown
+		Expect(sd).NotTo(BeNil())
+		Expect(sd.StabilizationWindowSeconds).To(HaveValue(Equal(int32(900))))
+		Expect(sd.SelectPolicy).To(HaveValue(Equal(autoscalingv2.MinChangePolicySelect)))
+		Expect(sd.Policies).To(ConsistOf(autoscalingv2.HPAScalingPolicy{
+			Type: autoscalingv2.PodsScalingPolicy, Value: 1, PeriodSeconds: 300,
+		}))
 
 		Eventually(func() agentsv1alpha1.AgentServicePhase { return getService(ns, "support")().Status.Phase },
 			timeout, interval).Should(Equal(agentsv1alpha1.AgentServiceProgressing))

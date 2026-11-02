@@ -220,6 +220,46 @@ func TestMutateHPADefaultsToCPU(t *testing.T) {
 	}
 }
 
+func TestMutateHPAScaleBehaviorFollowsSessionState(t *testing.T) {
+	svc := &agentsv1alpha1.AgentService{
+		ObjectMeta: metav1.ObjectMeta{Name: "a"},
+		Spec:       agentsv1alpha1.AgentServiceSpec{Autoscaling: &agentsv1alpha1.AutoscalingSpec{Enabled: true, MinReplicas: 1, MaxReplicas: 3}},
+	}
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+
+	MutateHPA(hpa, svc) // Stateful is the default
+	sd := hpa.Spec.Behavior.ScaleDown
+	if sd == nil || ptr.Deref(sd.StabilizationWindowSeconds, 0) != statefulScaleDownWindowSeconds {
+		t.Fatalf("stateful scaleDown = %+v", sd)
+	}
+	if len(sd.Policies) != 1 || sd.Policies[0].Type != autoscalingv2.PodsScalingPolicy ||
+		sd.Policies[0].Value != 1 || sd.Policies[0].PeriodSeconds != statefulScaleDownPeriodSeconds {
+		t.Errorf("stateful policies = %+v", sd.Policies)
+	}
+	if hpa.Spec.Behavior.ScaleUp != nil {
+		t.Errorf("scale-up must stay unset when absent, got %+v", hpa.Spec.Behavior.ScaleUp)
+	}
+
+	// The API server defaults ScaleUp; reconciling must not touch it, or every
+	// reconcile would look like a change.
+	serverScaleUp := &autoscalingv2.HPAScalingRules{StabilizationWindowSeconds: ptr.To[int32](0)}
+	hpa.Spec.Behavior.ScaleUp = serverScaleUp
+	before := hpa.DeepCopy()
+	MutateHPA(hpa, svc)
+	if !equality.Semantic.DeepEqual(before.Spec, hpa.Spec) {
+		t.Errorf("second mutate changed the spec:\n%+v\n%+v", before.Spec, hpa.Spec)
+	}
+	if hpa.Spec.Behavior.ScaleUp != serverScaleUp {
+		t.Errorf("scale-up was replaced: %+v", hpa.Spec.Behavior.ScaleUp)
+	}
+
+	svc.Spec.Sessions = &agentsv1alpha1.SessionsSpec{State: agentsv1alpha1.SessionStateless}
+	MutateHPA(hpa, svc)
+	if hpa.Spec.Behavior != nil {
+		t.Errorf("stateless should restore default behavior, got %+v", hpa.Spec.Behavior)
+	}
+}
+
 func TestDrainSafeCondition(t *testing.T) {
 	svc := func(s *agentsv1alpha1.SessionsSpec) *agentsv1alpha1.AgentService {
 		a := &agentsv1alpha1.AgentService{}

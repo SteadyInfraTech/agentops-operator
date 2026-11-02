@@ -209,6 +209,40 @@ func MutateHPA(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha1.A
 	add(corev1.ResourceCPU, cpu)
 	add(corev1.ResourceMemory, a.TargetMemoryUtilizationPercentage)
 	hpa.Spec.Metrics = metrics
+	applyScaleBehavior(hpa, svc)
+}
+
+// Scale-in pacing for Stateful agents. The HPA picks no victim, so every
+// removed pod may hold live sessions; the only lever is removing fewer pods,
+// less often. This lowers how often sessions are cut, it does not make
+// scale-in safe (see DrainSafe).
+const (
+	statefulScaleDownWindowSeconds int32 = 900 // 15 min of lower recommendations first
+	statefulScaleDownPeriodSeconds int32 = 300 // then at most one pod per 5 min
+)
+
+// applyScaleBehavior sets the scale-down pacing for svc. Stateless agents keep
+// the Kubernetes defaults, so behavior is cleared and switching to Stateless
+// restores them. Otherwise only ScaleDown is written: the API server fills in
+// a default ScaleUp once behavior is set, and overwriting it would make every
+// reconcile look like a change and send a needless update.
+func applyScaleBehavior(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha1.AgentService) {
+	if state, _ := SessionModel(svc); state == agentsv1alpha1.SessionStateless {
+		hpa.Spec.Behavior = nil
+		return
+	}
+	if hpa.Spec.Behavior == nil {
+		hpa.Spec.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{}
+	}
+	hpa.Spec.Behavior.ScaleDown = &autoscalingv2.HPAScalingRules{
+		StabilizationWindowSeconds: ptr.To(statefulScaleDownWindowSeconds),
+		SelectPolicy:               ptr.To(autoscalingv2.MinChangePolicySelect),
+		Policies: []autoscalingv2.HPAScalingPolicy{{
+			Type:          autoscalingv2.PodsScalingPolicy,
+			Value:         1,
+			PeriodSeconds: statefulScaleDownPeriodSeconds,
+		}},
+	}
 }
 
 // HPAEnabled reports whether the AgentService requests autoscaling.
