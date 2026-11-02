@@ -105,8 +105,10 @@ The manager exposes controller-runtime metrics plus:
 |---|---|
 | `agentops_agentservice_replicas` | `namespace`, `name`, `state` = desired \| current \| ready |
 | `agentops_agentservice_phase` | `namespace`, `name`, `phase` (1 = current) |
+| `agentops_agentservice_active_sessions` | `namespace`, `name` (Bound sessions assigned to the agent; a scaling signal) |
 | `agentops_agentpool_sessions` | `namespace`, `name`, `kind` = active \| capacity |
 | `agentops_agentsession_transitions_total` | `namespace`, `phase` |
+| `agentops_agentsession_assignments_total` | `namespace`, `target` = pool \| agent, `result` = bound \| unschedulable |
 
 Enable `config/prometheus` in `config/default/kustomization.yaml` for a `ServiceMonitor`
 (requires prometheus-operator).
@@ -166,8 +168,11 @@ config/                Kustomize manifests (CRDs, RBAC, manager, samples)
   single worker; if `MaxConcurrentReconciles` is raised, placement needs optimistic locking
   (e.g. a per-pool lease or capacity reservation).
 - A pool member deleted while it holds sessions fails those sessions rather than rescheduling.
-- HPA uses CPU/memory only; custom metrics (tokens/sec, queue depth, active sessions) via
-  `autoscaling/v2` `Pods`/`External` metrics or KEDA is a natural next step.
+- The generated HPA scales on CPU/memory only. `agentops_agentservice_active_sessions` is
+  available as a better signal (e.g. a KEDA `prometheus` trigger) but is not wired in yet.
+- Scale-in, rollouts and node drains can terminate a pod that is serving a session: the
+  operator sets no termination grace period or drain hook. See
+  [docs/design/session-draining.md](docs/design/session-draining.md).
 - No admission webhooks yet; validation is via OpenAPI schema + CEL.
 - Changing an AgentService's `runtimeRef` refreshes the new runtime's `status.agentServices`
   immediately; the previous runtime's count updates on its next reconcile.
