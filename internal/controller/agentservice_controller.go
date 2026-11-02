@@ -242,15 +242,18 @@ func (r *AgentServiceReconciler) foreignHPA(ctx context.Context, svc *agentsv1al
 	return "", nil
 }
 
-// isForeignHPA reports whether hpa scales svc's Deployment but belongs to
-// neither the operator nor a KEDA ScaledObject (KEDA's own HPA is owned by it).
+// isForeignHPA reports whether hpa scales svc's Deployment but is not ours: not
+// created by the operator, and not the HPA KEDA made for the ScaledObject named
+// after svc. An HPA owned by any other ScaledObject is a conflict, because KEDA
+// refuses a second ScaledObject on a workload another one already scales.
 func isForeignHPA(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha1.AgentService) bool {
 	t := hpa.Spec.ScaleTargetRef
 	if t.Kind != "Deployment" || t.Name != svc.Name || metav1.IsControlledBy(hpa, svc) {
 		return false
 	}
 	for _, o := range hpa.OwnerReferences {
-		if o.Kind == agent.ScaledObjectGVK.Kind && strings.HasPrefix(o.APIVersion, agent.ScaledObjectGVK.Group+"/") {
+		if o.Kind == agent.ScaledObjectGVK.Kind && o.Name == svc.Name &&
+			strings.HasPrefix(o.APIVersion, agent.ScaledObjectGVK.Group+"/") {
 			return false
 		}
 	}
@@ -270,6 +273,19 @@ func servicesForHPA(_ context.Context, o client.Object) []reconcile.Request {
 }
 
 func (r *AgentServiceReconciler) reconcileScaledObject(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+	// CreateOrUpdate would mutate and adopt a same-named ScaledObject the
+	// operator did not create, so look first and leave a foreign one alone.
+	existing := agent.NewScaledObject(svc)
+	switch err := r.Get(ctx, client.ObjectKeyFromObject(existing), existing); {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return err
+	case !metav1.IsControlledBy(existing, svc):
+		r.Recorder.Eventf(svc, corev1.EventTypeWarning, "AutoscalerConflict",
+			"ScaledObject %q exists and is not managed by this operator; leaving it unchanged", existing.GetName())
+		return nil
+	}
+
 	so := agent.NewScaledObject(svc)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, so, func() error {
 		if err := agent.MutateScaledObject(so, svc, r.PrometheusAddress); err != nil {

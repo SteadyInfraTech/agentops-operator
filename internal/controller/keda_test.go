@@ -130,6 +130,35 @@ var _ = Describe("AgentService scaling on sessions with KEDA", func() {
 		Eventually(scaledObject(ns, "a3"), timeout, interval).Should(Succeed())
 	})
 
+	It("leaves a same-named ScaledObject it does not own untouched", func() {
+		ns := newNamespace()
+		theirs := agent.NewScaledObject(&agentsv1alpha1.AgentService{ObjectMeta: metav1.ObjectMeta{Name: "a4", Namespace: ns}})
+		Expect(unstructured.SetNestedField(theirs.Object, int64(7), "spec", "maxReplicaCount")).To(Succeed())
+		Expect(k8sClient.Create(ctx, theirs)).To(Succeed())
+
+		Expect(k8sClient.Create(ctx, &agentsv1alpha1.AgentService{
+			ObjectMeta: metav1.ObjectMeta{Name: "a4", Namespace: ns},
+			Spec: agentsv1alpha1.AgentServiceSpec{
+				Image: "ghcr.io/example/agent:1.0",
+				Autoscaling: &agentsv1alpha1.AutoscalingSpec{
+					Enabled: true, MinReplicas: 1, MaxReplicas: 4, TargetSessionsPerPod: ptr.To[int32](5),
+				},
+			},
+		})).To(Succeed())
+
+		Consistently(func() []interface{} {
+			so := agent.NewScaledObject(&agentsv1alpha1.AgentService{ObjectMeta: metav1.ObjectMeta{Name: "a4", Namespace: ns}})
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "a4"}, so)).To(Succeed())
+			limit, _, _ := unstructured.NestedInt64(so.Object, "spec", "maxReplicaCount")
+			Expect(limit).To(Equal(int64(7)), "their spec must not be rewritten")
+			var owners []interface{}
+			for _, o := range so.GetOwnerReferences() {
+				owners = append(owners, o)
+			}
+			return owners
+		}, "3s", interval).Should(BeEmpty())
+	})
+
 	It("keeps the HPA and leaves a ScaledObject alone when no target is set", func() {
 		ns := newNamespace()
 		Expect(k8sClient.Create(ctx, &agentsv1alpha1.AgentService{
@@ -157,6 +186,7 @@ func TestIsForeignHPA(t *testing.T) {
 	controller := true
 	ours := metav1.OwnerReference{APIVersion: agentsv1alpha1.GroupVersion.String(), Kind: "AgentService", Name: "a", UID: "svc-uid", Controller: &controller}
 	keda := metav1.OwnerReference{APIVersion: "keda.sh/v1alpha1", Kind: "ScaledObject", Name: "a", UID: "so-uid", Controller: &controller}
+	otherKeda := metav1.OwnerReference{APIVersion: "keda.sh/v1alpha1", Kind: "ScaledObject", Name: "theirs", UID: "so2-uid", Controller: &controller}
 
 	tests := []struct {
 		name string
@@ -167,7 +197,8 @@ func TestIsForeignHPA(t *testing.T) {
 		{"HPA on another Deployment", hpa("Deployment", "b"), false},
 		{"HPA on another kind", hpa("StatefulSet", "a"), false},
 		{"HPA owned by the operator", hpa("Deployment", "a", ours), false},
-		{"HPA created by KEDA", hpa("Deployment", "a", keda), false},
+		{"HPA created by KEDA for our ScaledObject", hpa("Deployment", "a", keda), false},
+		{"HPA created by KEDA for another ScaledObject", hpa("Deployment", "a", otherKeda), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
