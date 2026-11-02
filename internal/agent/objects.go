@@ -234,7 +234,13 @@ func applyScaleBehavior(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv
 	if hpa.Spec.Behavior == nil {
 		hpa.Spec.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{}
 	}
-	hpa.Spec.Behavior.ScaleDown = &autoscalingv2.HPAScalingRules{
+	hpa.Spec.Behavior.ScaleDown = statefulScaleDownRules()
+}
+
+// statefulScaleDownRules is the scale-in pacing shared by the HPA and the KEDA
+// ScaledObject (which hands it to the HPA it creates).
+func statefulScaleDownRules() *autoscalingv2.HPAScalingRules {
+	return &autoscalingv2.HPAScalingRules{
 		StabilizationWindowSeconds: ptr.To(statefulScaleDownWindowSeconds),
 		SelectPolicy:               ptr.To(autoscalingv2.MinChangePolicySelect),
 		Policies: []autoscalingv2.HPAScalingPolicy{{

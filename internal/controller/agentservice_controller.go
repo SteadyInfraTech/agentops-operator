@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -49,6 +50,13 @@ type AgentServiceReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// KEDAAvailable says the keda.sh ScaledObject API exists in the cluster
+	// (detected once at startup, see DetectKEDA).
+	KEDAAvailable bool
+	// PrometheusAddress is the Prometheus KEDA queries for the active-sessions
+	// gauge. Without it autoscaling.targetSessionsPerPod cannot be honored.
+	PrometheusAddress string
 }
 
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices,verbs=get;list;watch;create;update;patch;delete
@@ -59,6 +67,7 @@ type AgentServiceReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile drives the generated workload objects towards the AgentService spec
@@ -128,8 +137,8 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.reconcileService(ctx, svc, resolved); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling Service: %w", err)
 	}
-	if err := r.reconcileHPA(ctx, svc); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconciling HorizontalPodAutoscaler: %w", err)
+	if err := r.reconcileAutoscaler(ctx, svc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconciling autoscaler: %w", err)
 	}
 
 	r.updateStatus(svc, dep, resolved)
@@ -173,9 +182,65 @@ func (r *AgentServiceReconciler) reconcileService(ctx context.Context, svc *agen
 	return err
 }
 
-func (r *AgentServiceReconciler) reconcileHPA(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+// useKEDA reports whether the autoscaler for svc is a KEDA ScaledObject. KEDA
+// creates its own HPA for the Deployment, so the operator must never keep an
+// HPA of its own next to it.
+func (r *AgentServiceReconciler) useKEDA(svc *agentsv1alpha1.AgentService) bool {
+	return r.KEDAAvailable && r.PrometheusAddress != "" && agent.SessionScalingRequested(svc)
+}
+
+func (r *AgentServiceReconciler) reconcileAutoscaler(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+	if agent.SessionScalingRequested(svc) && !r.useKEDA(svc) {
+		r.Recorder.Event(svc, corev1.EventTypeWarning, "SessionScalingUnavailable",
+			"autoscaling.targetSessionsPerPod needs KEDA installed and the operator started with "+
+				"--prometheus-address; scaling on CPU/memory only")
+	}
+
+	// Order matters: KEDA's admission refuses a ScaledObject while another HPA
+	// targets the Deployment, so the outgoing autoscaler is removed first.
+	if r.useKEDA(svc) {
+		if err := r.reconcileHPA(ctx, svc, false); err != nil {
+			return err
+		}
+		return r.reconcileScaledObject(ctx, svc)
+	}
+	if r.KEDAAvailable {
+		if err := r.deleteOwnedScaledObject(ctx, svc); err != nil {
+			return err
+		}
+	}
+	return r.reconcileHPA(ctx, svc, agent.HPAEnabled(svc))
+}
+
+func (r *AgentServiceReconciler) reconcileScaledObject(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+	so := agent.NewScaledObject(svc)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, so, func() error {
+		if err := agent.MutateScaledObject(so, svc, r.PrometheusAddress); err != nil {
+			return err
+		}
+		return controllerutil.SetControllerReference(svc, so, r.Scheme)
+	})
+	return err
+}
+
+// deleteOwnedScaledObject removes the ScaledObject this operator created.
+// A user-managed one is never touched.
+func (r *AgentServiceReconciler) deleteOwnedScaledObject(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+	so := agent.NewScaledObject(svc)
+	if err := r.Get(ctx, client.ObjectKeyFromObject(so), so); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if metav1.IsControlledBy(so, svc) {
+		return client.IgnoreNotFound(r.Delete(ctx, so))
+	}
+	return nil
+}
+
+// reconcileHPA makes the HPA match want: it creates or updates it when wanted
+// and deletes the one this operator owns otherwise.
+func (r *AgentServiceReconciler) reconcileHPA(ctx context.Context, svc *agentsv1alpha1.AgentService, want bool) error {
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Name: svc.Name, Namespace: svc.Namespace}}
-	if !agent.HPAEnabled(svc) {
+	if !want {
 		// Only delete an HPA we own; never touch a user-managed one.
 		if err := r.Get(ctx, client.ObjectKeyFromObject(hpa), hpa); err != nil {
 			return client.IgnoreNotFound(err)
@@ -272,16 +337,21 @@ func setCond(svc *agentsv1alpha1.AgentService, t string, s metav1.ConditionStatu
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AgentServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&agentsv1alpha1.AgentService{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Watches(&agentsv1alpha1.AgentRuntime{}, handler.EnqueueRequestsFromMapFunc(r.servicesForRuntime)).
 		// Binding or finishing a session changes the active-sessions gauge.
-		Watches(&agentsv1alpha1.AgentSession{}, handler.EnqueueRequestsFromMapFunc(servicesForSession)).
-		Named("agentservice").
-		Complete(r)
+		Watches(&agentsv1alpha1.AgentSession{}, handler.EnqueueRequestsFromMapFunc(servicesForSession))
+	if r.KEDAAvailable {
+		// Only when the kind exists: watching a missing CRD fails startup.
+		so := &unstructured.Unstructured{}
+		so.SetGroupVersionKind(agent.ScaledObjectGVK)
+		b = b.Owns(so)
+	}
+	return b.Named("agentservice").Complete(r)
 }
 
 // servicesForSession enqueues the AgentService a changed AgentSession is (or

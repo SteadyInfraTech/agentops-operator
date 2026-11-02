@@ -51,6 +51,7 @@ spec:
   # probes:  { livenessPath: /healthz, readinessPath: /readyz, startupFailureThreshold: 60 }
   # metrics: { enabled: true, port: 9100, path: /metrics }
   # sessions: { state: Stateful, transport: Request }   # both are the defaults
+  # autoscaling.targetSessionsPerPod: 10   # scale on active sessions (needs KEDA, see below)
 ```
 
 ```console
@@ -72,6 +73,24 @@ mechanism exists yet, so it is currently always `False` with a reason: `BestEffo
 (Stateless over Request), `DrainNotEnabled` (Connection) or `RequestTransportWithoutRouting`
 (Stateful over Request, which needs session-aware routing). See
 [the design note](docs/design/session-draining.md).
+
+#### Scaling on active sessions (KEDA)
+
+`autoscaling.targetSessionsPerPod` scales the agent on `agentops_agentservice_active_sessions`
+instead of CPU alone: replicas follow `sessions / targetSessionsPerPod`. It needs:
+
+- **KEDA** installed. The operator then creates a `ScaledObject` (and removes the HPA it owns,
+  because KEDA creates its own and refuses a second one on the same Deployment). KEDA is
+  detected once at startup, so install it before the operator or restart the operator.
+- **Prometheus** scraping the operator, and the operator started with
+  `--prometheus-address=http://prometheus.monitoring:9090`. The shipped `ServiceMonitor`
+  sets `honorLabels: true`; without it Prometheus renames the `namespace` and `name` labels
+  to `exported_*` and the query matches nothing.
+
+CPU and memory targets stay as extra triggers and the largest recommendation wins. The same
+slow scale-in applies to Stateful agents. Without KEDA or the address the field is ignored,
+the operator keeps its HPA and emits a `SessionScalingUnavailable` warning event. A
+`ScaledObject` the operator did not create is never touched.
 
 The `/scale` subresource is enabled, so `kubectl scale agent/support-agent --replicas=3` works when autoscaling is off.
 
@@ -203,8 +222,9 @@ config/                Kustomize manifests (CRDs, RBAC, manager, samples)
   single worker; if `MaxConcurrentReconciles` is raised, placement needs optimistic locking
   (e.g. a per-pool lease or capacity reservation).
 - A pool member deleted while it holds sessions fails those sessions rather than rescheduling.
-- The generated HPA scales on CPU/memory only. `agentops_agentservice_active_sessions` is
-  available as a better signal (e.g. a KEDA `prometheus` trigger) but is not wired in yet.
+- The generated HPA scales on CPU/memory only. Scaling on `agentops_agentservice_active_sessions`
+  needs KEDA and Prometheus (see above); a fallback for clusters with only an HPA external
+  metric adapter is not implemented.
   For Stateful agents (the default) the HPA scales in slowly: a 15 min stabilization window
   and at most one pod per 5 min. This reduces how often sessions are cut; it does not choose
   which pod is removed. The policy does not limit one case: lowering `maxReplicas` below the
