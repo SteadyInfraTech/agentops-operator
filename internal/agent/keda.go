@@ -82,8 +82,9 @@ func MutateScaledObject(so *unstructured.Unstructured, svc *agentsv1alpha1.Agent
 			"metadata":   map[string]interface{}{"value": fmt.Sprint(*target)},
 		})
 	}
-	resource("cpu", a.TargetCPUUtilizationPercentage)
-	resource("memory", a.TargetMemoryUtilizationPercentage)
+	cpu, memory := resourceTargets(a)
+	resource("cpu", cpu)
+	resource("memory", memory)
 
 	set := func(value interface{}, path ...string) error {
 		return unstructured.SetNestedField(so.Object, value, append([]string{"spec"}, path...)...)

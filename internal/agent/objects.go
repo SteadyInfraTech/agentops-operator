@@ -202,12 +202,9 @@ func MutateHPA(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha1.A
 			},
 		})
 	}
-	cpu := a.TargetCPUUtilizationPercentage
-	if cpu == nil && a.TargetMemoryUtilizationPercentage == nil {
-		cpu = ptr.To[int32](75)
-	}
+	cpu, memory := resourceTargets(a)
 	add(corev1.ResourceCPU, cpu)
-	add(corev1.ResourceMemory, a.TargetMemoryUtilizationPercentage)
+	add(corev1.ResourceMemory, memory)
 	hpa.Spec.Metrics = metrics
 	applyScaleBehavior(hpa, svc)
 }
@@ -249,6 +246,17 @@ func statefulScaleDownRules() *autoscalingv2.HPAScalingRules {
 			PeriodSeconds: statefulScaleDownPeriodSeconds,
 		}},
 	}
+}
+
+// resourceTargets returns the CPU and memory utilization targets of an
+// autoscaler. With neither set, CPU defaults to 75%. The HPA and the KEDA
+// ScaledObject both use it, so switching between them keeps the same targets.
+func resourceTargets(a *agentsv1alpha1.AutoscalingSpec) (cpu, memory *int32) {
+	cpu, memory = a.TargetCPUUtilizationPercentage, a.TargetMemoryUtilizationPercentage
+	if cpu == nil && memory == nil {
+		cpu = ptr.To[int32](75)
+	}
+	return cpu, memory
 }
 
 // HPAEnabled reports whether the AgentService requests autoscaling.

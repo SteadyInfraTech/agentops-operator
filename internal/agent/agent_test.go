@@ -363,3 +363,34 @@ func TestMutateScaledObject(t *testing.T) {
 		t.Error("no target means no session scaling")
 	}
 }
+
+func TestScaledObjectKeepsTheHPADefaultCPUTarget(t *testing.T) {
+	svc := &agentsv1alpha1.AgentService{
+		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"},
+		Spec: agentsv1alpha1.AgentServiceSpec{Autoscaling: &agentsv1alpha1.AutoscalingSpec{
+			Enabled: true, MinReplicas: 1, MaxReplicas: 3, TargetSessionsPerPod: ptr.To[int32](5),
+		}},
+	}
+	so := NewScaledObject(svc)
+	if err := MutateScaledObject(so, svc, "http://prom:9090"); err != nil {
+		t.Fatal(err)
+	}
+	triggers, _, _ := unstructured.NestedSlice(so.Object, "spec", "triggers")
+	if len(triggers) != 2 {
+		t.Fatalf("triggers = %v, want sessions + the default cpu", triggers)
+	}
+	cpu := triggers[1].(map[string]interface{})
+	if cpu["type"] != "cpu" || cpu["metadata"].(map[string]interface{})["value"] != "75" {
+		t.Errorf("default cpu trigger = %v, want 75%% like the HPA", cpu)
+	}
+
+	// Memory alone replaces the default, as it does for the HPA.
+	svc.Spec.Autoscaling.TargetMemoryUtilizationPercentage = ptr.To[int32](60)
+	if err := MutateScaledObject(so, svc, "http://prom:9090"); err != nil {
+		t.Fatal(err)
+	}
+	triggers, _, _ = unstructured.NestedSlice(so.Object, "spec", "triggers")
+	if len(triggers) != 2 || triggers[1].(map[string]interface{})["type"] != "memory" {
+		t.Errorf("triggers = %v, want sessions + memory only", triggers)
+	}
+}
