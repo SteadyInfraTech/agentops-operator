@@ -61,6 +61,9 @@ type AgentServiceReconciler struct {
 	PrometheusAddress string
 }
 
+// deploymentKind is the kind of the workload an HPA must target to scale an agent.
+const deploymentKind = "Deployment"
+
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices/finalizers,verbs=update
@@ -249,7 +252,7 @@ func (r *AgentServiceReconciler) kedaHPAPending(ctx context.Context, svc *agents
 	}
 	for i := range list.Items {
 		h := &list.Items[i]
-		if t := h.Spec.ScaleTargetRef; t.Kind == "Deployment" && t.Name == svc.Name && ownedByServiceScaledObject(h, svc) {
+		if t := h.Spec.ScaleTargetRef; t.Kind == deploymentKind && t.Name == svc.Name && ownedByServiceScaledObject(h, svc) {
 			return true, nil
 		}
 	}
@@ -289,7 +292,7 @@ func (r *AgentServiceReconciler) foreignHPA(ctx context.Context, svc *agentsv1al
 // refuses a second ScaledObject on a workload another one already scales.
 func isForeignHPA(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha1.AgentService) bool {
 	t := hpa.Spec.ScaleTargetRef
-	if t.Kind != "Deployment" || t.Name != svc.Name || metav1.IsControlledBy(hpa, svc) {
+	if t.Kind != deploymentKind || t.Name != svc.Name || metav1.IsControlledBy(hpa, svc) {
 		return false
 	}
 	return !ownedByServiceScaledObject(hpa, svc)
@@ -305,7 +308,7 @@ func servicesForScaledObject(_ context.Context, o client.Object) []reconcile.Req
 // removing a conflicting HPA lets the ScaledObject be created.
 func servicesForHPA(_ context.Context, o client.Object) []reconcile.Request {
 	hpa, ok := o.(*autoscalingv2.HorizontalPodAutoscaler)
-	if !ok || hpa.Spec.ScaleTargetRef.Kind != "Deployment" {
+	if !ok || hpa.Spec.ScaleTargetRef.Kind != deploymentKind {
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{
