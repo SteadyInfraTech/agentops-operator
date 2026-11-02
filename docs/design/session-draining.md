@@ -80,9 +80,18 @@ spec:
 | `Stateful` | `Request` | not safe | not safe without session-aware routing (see Routing) |
 
 The operator reports this instead of pretending: a `DrainSafe` condition on the
-`AgentService`, `True` for `Stateless` + `Request` and for `Connection` agents with
-`drain.enabled`, otherwise `False` with a reason such as `DrainNotEnabled` or
-`RequestTransportWithoutRouting`.
+`AgentService`. It is `True` only when there is an explicit guarantee, which means
+`drain.enabled` on a combination the drain covers (`Stateless` + `Request`, or any
+`Connection`). Otherwise it is `False` with a reason:
+
+| Reason | When |
+|---|---|
+| `BestEffortOnly` | `Stateless` + `Request` on an unmodified agent: nothing is lost, but an in-flight request can be |
+| `DrainNotEnabled` | `Connection` on an unmodified agent |
+| `RequestTransportWithoutRouting` | `Stateful` + `Request`, until session-aware routing exists |
+
+`BestEffortOnly` is low impact and informational; it exists so the condition never claims
+more than the baseline delivers.
 
 Failing `/readyz` removes the pod from the Service endpoints, which only affects **new**
 connections. Established connections keep flowing in the usual kube-proxy modes. That is
@@ -211,7 +220,9 @@ verified).
 
 ## Open decisions
 
-Settled: default `Stateful`, `Stateless` opts out; both transports are supported; the drain
+Settled: default `Stateful`, `Stateless` opts out; both transports are declared per
+`AgentService`, and the `Stateless` and `Connection` combinations are supported;
+`Stateful` + `Request` is conditional on draining-pin support (decision 1); the drain
 budget is its own setting and draining is opt-in; routing goes through Gateway API with
 consistent hashing as the placement strategy; idle is agent-reported when draining is on.
 
