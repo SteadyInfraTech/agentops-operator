@@ -130,33 +130,48 @@ var _ = Describe("AgentService scaling on sessions with KEDA", func() {
 		Eventually(scaledObject(ns, "a3"), timeout, interval).Should(Succeed())
 	})
 
-	It("leaves a same-named ScaledObject it does not own untouched", func() {
+	It("keeps its HPA while a same-named ScaledObject it does not own blocks the switch", func() {
 		ns := newNamespace()
+		Expect(k8sClient.Create(ctx, &agentsv1alpha1.AgentService{
+			ObjectMeta: metav1.ObjectMeta{Name: "a4", Namespace: ns},
+			Spec: agentsv1alpha1.AgentServiceSpec{
+				Image:       "ghcr.io/example/agent:1.0",
+				Autoscaling: &agentsv1alpha1.AutoscalingSpec{Enabled: true, MinReplicas: 1, MaxReplicas: 4},
+			},
+		})).To(Succeed())
+		Eventually(hpa(ns, "a4"), timeout, interval).Should(Succeed())
+
 		theirs := agent.NewScaledObject(&agentsv1alpha1.AgentService{ObjectMeta: metav1.ObjectMeta{Name: "a4", Namespace: ns}})
 		Expect(unstructured.SetNestedField(theirs.Object, int64(7), "spec", "maxReplicaCount")).To(Succeed())
 		Expect(k8sClient.Create(ctx, theirs)).To(Succeed())
 
-		Expect(k8sClient.Create(ctx, &agentsv1alpha1.AgentService{
-			ObjectMeta: metav1.ObjectMeta{Name: "a4", Namespace: ns},
-			Spec: agentsv1alpha1.AgentServiceSpec{
-				Image: "ghcr.io/example/agent:1.0",
-				Autoscaling: &agentsv1alpha1.AutoscalingSpec{
-					Enabled: true, MinReplicas: 1, MaxReplicas: 4, TargetSessionsPerPod: ptr.To[int32](5),
-				},
-			},
-		})).To(Succeed())
+		By("asking for session scaling")
+		Eventually(func() error {
+			s := getService(ns, "a4")()
+			s.Spec.Autoscaling.TargetSessionsPerPod = ptr.To[int32](5)
+			return k8sClient.Update(ctx, s)
+		}, timeout, interval).Should(Succeed())
 
-		Consistently(func() []interface{} {
+		By("leaving their ScaledObject unchanged and keeping our HPA")
+		Consistently(func() []metav1.OwnerReference {
 			so := agent.NewScaledObject(&agentsv1alpha1.AgentService{ObjectMeta: metav1.ObjectMeta{Name: "a4", Namespace: ns}})
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "a4"}, so)).To(Succeed())
 			limit, _, _ := unstructured.NestedInt64(so.Object, "spec", "maxReplicaCount")
 			Expect(limit).To(Equal(int64(7)), "their spec must not be rewritten")
-			var owners []interface{}
-			for _, o := range so.GetOwnerReferences() {
-				owners = append(owners, o)
-			}
-			return owners
+			Expect(hpa(ns, "a4")()).To(Succeed(), "our HPA must stay until the switch can complete")
+			return so.GetOwnerReferences()
 		}, "3s", interval).Should(BeEmpty())
+
+		By("switching once their ScaledObject is gone")
+		Expect(k8sClient.Delete(ctx, theirs)).To(Succeed())
+		Eventually(func() bool {
+			so := agent.NewScaledObject(&agentsv1alpha1.AgentService{ObjectMeta: metav1.ObjectMeta{Name: "a4", Namespace: ns}})
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "a4"}, so); err != nil {
+				return false
+			}
+			return metav1.IsControlledBy(so, getService(ns, "a4")())
+		}, timeout, interval).Should(BeTrue())
+		Eventually(gone(hpa(ns, "a4")), timeout, interval).Should(BeTrue())
 	})
 
 	It("keeps the HPA and leaves a ScaledObject alone when no target is set", func() {
