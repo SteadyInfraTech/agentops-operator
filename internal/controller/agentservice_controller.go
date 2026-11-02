@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -27,6 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -49,7 +52,17 @@ type AgentServiceReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// KEDAAvailable says the keda.sh ScaledObject API exists in the cluster
+	// (detected once at startup, see DetectKEDA).
+	KEDAAvailable bool
+	// PrometheusAddress is the Prometheus KEDA queries for the active-sessions
+	// gauge. Without it autoscaling.targetSessionsPerPod cannot be honored.
+	PrometheusAddress string
 }
+
+// deploymentKind is the kind of the workload an HPA must target to scale an agent.
+const deploymentKind = "Deployment"
 
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices/status,verbs=get;update;patch
@@ -59,6 +72,7 @@ type AgentServiceReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile drives the generated workload objects towards the AgentService spec
@@ -128,8 +142,8 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.reconcileService(ctx, svc, resolved); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling Service: %w", err)
 	}
-	if err := r.reconcileHPA(ctx, svc); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconciling HorizontalPodAutoscaler: %w", err)
+	if err := r.reconcileAutoscaler(ctx, svc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconciling autoscaler: %w", err)
 	}
 
 	r.updateStatus(svc, dep, resolved)
@@ -173,9 +187,203 @@ func (r *AgentServiceReconciler) reconcileService(ctx context.Context, svc *agen
 	return err
 }
 
-func (r *AgentServiceReconciler) reconcileHPA(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+// useKEDA reports whether the autoscaler for svc is a KEDA ScaledObject. KEDA
+// creates its own HPA for the Deployment, so the operator must never keep an
+// HPA of its own next to it.
+func (r *AgentServiceReconciler) useKEDA(svc *agentsv1alpha1.AgentService) bool {
+	return r.KEDAAvailable && r.PrometheusAddress != "" && agent.SessionScalingRequested(svc)
+}
+
+func (r *AgentServiceReconciler) reconcileAutoscaler(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+	if agent.SessionScalingRequested(svc) && !r.useKEDA(svc) {
+		r.Recorder.Event(svc, corev1.EventTypeWarning, "SessionScalingUnavailable",
+			"autoscaling.targetSessionsPerPod needs KEDA installed and the operator started with "+
+				"--prometheus-address; scaling on CPU/memory only")
+	}
+
+	if r.useKEDA(svc) {
+		// Conflicts are checked before anything is deleted: while one exists the
+		// switch cannot complete, and removing our HPA would leave the service
+		// with no autoscaler. Their objects are left alone, and the watches on
+		// HPAs and ScaledObjects bring us back when the conflict is gone.
+		conflict, err := r.kedaConflict(ctx, svc)
+		if err != nil {
+			return err
+		}
+		if conflict != "" {
+			r.Recorder.Event(svc, corev1.EventTypeWarning, "AutoscalerConflict", conflict)
+			return nil
+		}
+		// KEDA's admission refuses a ScaledObject while another HPA targets the
+		// Deployment, so the outgoing HPA is removed first.
+		if err := r.reconcileHPA(ctx, svc, false); err != nil {
+			return err
+		}
+		return r.reconcileScaledObject(ctx, svc)
+	}
+	if r.KEDAAvailable {
+		if err := r.deleteOwnedScaledObject(ctx, svc); err != nil {
+			return err
+		}
+		// KEDA's HPA outlives the ScaledObject for a moment (it is garbage
+		// collected), and two HPAs on one Deployment stop it from scaling at
+		// all. Wait for it to go; the HPA watch re-enqueues us when it does.
+		if agent.HPAEnabled(svc) {
+			pending, err := r.kedaHPAPending(ctx, svc)
+			if err != nil {
+				return err
+			}
+			if pending {
+				r.Recorder.Event(svc, corev1.EventTypeNormal, "WaitingForKEDAHPA",
+					"waiting for the HorizontalPodAutoscaler KEDA created to be removed before creating ours")
+				return nil
+			}
+		}
+	}
+	return r.reconcileHPA(ctx, svc, agent.HPAEnabled(svc))
+}
+
+// kedaHPAPending reports whether an HPA owned by the ScaledObject named after
+// svc still targets its Deployment.
+func (r *AgentServiceReconciler) kedaHPAPending(ctx context.Context, svc *agentsv1alpha1.AgentService) (bool, error) {
+	var list autoscalingv2.HorizontalPodAutoscalerList
+	if err := r.List(ctx, &list, client.InNamespace(svc.Namespace)); err != nil {
+		return false, fmt.Errorf("listing HorizontalPodAutoscalers: %w", err)
+	}
+	for i := range list.Items {
+		h := &list.Items[i]
+		if t := h.Spec.ScaleTargetRef; t.Kind == deploymentKind && t.Name == svc.Name && ownedByServiceScaledObject(h, svc) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ownedByServiceScaledObject reports whether hpa is owned by the KEDA
+// ScaledObject named after svc, i.e. the HPA KEDA made for our ScaledObject.
+func ownedByServiceScaledObject(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha1.AgentService) bool {
+	for _, o := range hpa.OwnerReferences {
+		if o.Kind == agent.ScaledObjectGVK.Kind && o.Name == svc.Name &&
+			strings.HasPrefix(o.APIVersion, agent.ScaledObjectGVK.Group+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// foreignHPA returns the name of an HPA, not created by this operator or by
+// KEDA, that targets svc's Deployment, or "" when there is none.
+func (r *AgentServiceReconciler) foreignHPA(ctx context.Context, svc *agentsv1alpha1.AgentService) (string, error) {
+	var list autoscalingv2.HorizontalPodAutoscalerList
+	if err := r.List(ctx, &list, client.InNamespace(svc.Namespace)); err != nil {
+		return "", fmt.Errorf("listing HorizontalPodAutoscalers: %w", err)
+	}
+	for i := range list.Items {
+		if isForeignHPA(&list.Items[i], svc) {
+			return list.Items[i].Name, nil
+		}
+	}
+	return "", nil
+}
+
+// isForeignHPA reports whether hpa scales svc's Deployment but is not ours: not
+// created by the operator, and not the HPA KEDA made for the ScaledObject named
+// after svc. An HPA owned by any other ScaledObject is a conflict, because KEDA
+// refuses a second ScaledObject on a workload another one already scales.
+func isForeignHPA(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha1.AgentService) bool {
+	t := hpa.Spec.ScaleTargetRef
+	if t.Kind != deploymentKind || t.Name != svc.Name || metav1.IsControlledBy(hpa, svc) {
+		return false
+	}
+	return !ownedByServiceScaledObject(hpa, svc)
+}
+
+// servicesForScaledObject enqueues the AgentService a ScaledObject is named
+// after; the operator names its own ScaledObject after the service.
+func servicesForScaledObject(_ context.Context, o client.Object) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: o.GetName()}}}
+}
+
+// servicesForHPA enqueues the AgentService whose Deployment an HPA targets, so
+// removing a conflicting HPA lets the ScaledObject be created.
+func servicesForHPA(_ context.Context, o client.Object) []reconcile.Request {
+	hpa, ok := o.(*autoscalingv2.HorizontalPodAutoscaler)
+	if !ok || hpa.Spec.ScaleTargetRef.Kind != deploymentKind {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: hpa.Namespace, Name: hpa.Spec.ScaleTargetRef.Name,
+	}}}
+}
+
+// kedaConflict describes why the switch to a ScaledObject cannot complete, or
+// returns "" when nothing is in the way: a same-named ScaledObject this
+// operator does not control, or an HPA that is not ours already scaling the
+// Deployment.
+func (r *AgentServiceReconciler) kedaConflict(ctx context.Context, svc *agentsv1alpha1.AgentService) (string, error) {
+	existing := agent.NewScaledObject(svc)
+	switch err := r.Get(ctx, client.ObjectKeyFromObject(existing), existing); {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return "", err
+	case !metav1.IsControlledBy(existing, svc):
+		return fmt.Sprintf("ScaledObject %q exists and is not managed by this operator; leaving it unchanged",
+			existing.GetName()), nil
+	}
+	foreign, err := r.foreignHPA(ctx, svc)
+	if err != nil {
+		return "", err
+	}
+	if foreign != "" {
+		return fmt.Sprintf("HorizontalPodAutoscaler %q already targets Deployment %q; remove it so KEDA can scale on sessions",
+			foreign, svc.Name), nil
+	}
+	return "", nil
+}
+
+// errForeignScaledObject means a ScaledObject the operator does not control
+// showed up under our name after kedaConflict looked.
+var errForeignScaledObject = errors.New("ScaledObject is not managed by this operator")
+
+func (r *AgentServiceReconciler) reconcileScaledObject(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+	so := agent.NewScaledObject(svc)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, so, func() error {
+		// CreateOrUpdate reads again, so this also covers an object created
+		// since kedaConflict: never mutate or adopt one that is not ours.
+		if so.GetUID() != "" && !metav1.IsControlledBy(so, svc) {
+			return errForeignScaledObject
+		}
+		if err := agent.MutateScaledObject(so, svc, r.PrometheusAddress); err != nil {
+			return err
+		}
+		return controllerutil.SetControllerReference(svc, so, r.Scheme)
+	})
+	if errors.Is(err, errForeignScaledObject) {
+		r.Recorder.Eventf(svc, corev1.EventTypeWarning, "AutoscalerConflict",
+			"ScaledObject %q exists and is not managed by this operator; leaving it unchanged", so.GetName())
+		return nil
+	}
+	return err
+}
+
+// deleteOwnedScaledObject removes the ScaledObject this operator created.
+// A user-managed one is never touched.
+func (r *AgentServiceReconciler) deleteOwnedScaledObject(ctx context.Context, svc *agentsv1alpha1.AgentService) error {
+	so := agent.NewScaledObject(svc)
+	if err := r.Get(ctx, client.ObjectKeyFromObject(so), so); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if metav1.IsControlledBy(so, svc) {
+		return client.IgnoreNotFound(r.Delete(ctx, so))
+	}
+	return nil
+}
+
+// reconcileHPA makes the HPA match want: it creates or updates it when wanted
+// and deletes the one this operator owns otherwise.
+func (r *AgentServiceReconciler) reconcileHPA(ctx context.Context, svc *agentsv1alpha1.AgentService, want bool) error {
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Name: svc.Name, Namespace: svc.Namespace}}
-	if !agent.HPAEnabled(svc) {
+	if !want {
 		// Only delete an HPA we own; never touch a user-managed one.
 		if err := r.Get(ctx, client.ObjectKeyFromObject(hpa), hpa); err != nil {
 			return client.IgnoreNotFound(err)
@@ -272,16 +480,24 @@ func setCond(svc *agentsv1alpha1.AgentService, t string, s metav1.ConditionStatu
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AgentServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&agentsv1alpha1.AgentService{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Watches(&agentsv1alpha1.AgentRuntime{}, handler.EnqueueRequestsFromMapFunc(r.servicesForRuntime)).
 		// Binding or finishing a session changes the active-sessions gauge.
-		Watches(&agentsv1alpha1.AgentSession{}, handler.EnqueueRequestsFromMapFunc(servicesForSession)).
-		Named("agentservice").
-		Complete(r)
+		Watches(&agentsv1alpha1.AgentSession{}, handler.EnqueueRequestsFromMapFunc(servicesForSession))
+	if r.KEDAAvailable {
+		b = b.Watches(&autoscalingv2.HorizontalPodAutoscaler{}, handler.EnqueueRequestsFromMapFunc(servicesForHPA))
+		// Only when the kind exists: watching a missing CRD fails startup.
+		so := &unstructured.Unstructured{}
+		so.SetGroupVersionKind(agent.ScaledObjectGVK)
+		// By name rather than Owns: a conflicting ScaledObject we do not own must
+		// also bring the service back when it is deleted.
+		b = b.Watches(so, handler.EnqueueRequestsFromMapFunc(servicesForScaledObject))
+	}
+	return b.Named("agentservice").Complete(r)
 }
 
 // servicesForSession enqueues the AgentService a changed AgentSession is (or

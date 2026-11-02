@@ -13,6 +13,10 @@ spec:
     - path: /metrics
       port: https # Ensure this is the name of the port that exposes HTTPS metrics
       scheme: https
+      # Keep the namespace and name labels of agentops_agentservice_active_sessions.
+      # Without this Prometheus renames them to exported_*, and the KEDA query
+      # behind autoscaling.targetSessionsPerPod matches nothing.
+      honorLabels: true
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       tlsConfig:
         # TODO(user): The option insecureSkipVerify: true is not recommended for production since it disables

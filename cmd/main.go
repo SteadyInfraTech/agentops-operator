@@ -64,6 +64,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var prometheusAddress string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -80,6 +81,9 @@ func main() {
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	flag.StringVar(&prometheusAddress, "prometheus-address", "",
+		"Address of the Prometheus that scrapes this operator, e.g. http://prometheus.monitoring:9090. "+
+			"With KEDA installed it enables autoscaling.targetSessionsPerPod; without it that field is ignored.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
@@ -203,6 +207,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	kedaAvailable, err := controller.DetectKEDA(mgr.GetConfig())
+	if err != nil {
+		// A missing KEDA group is (false, nil); an error means discovery failed.
+		// Do not guess: a wrong "false" would make the operator create an HPA
+		// next to a ScaledObject it already owns.
+		setupLog.Error(err, "unable to detect KEDA")
+		os.Exit(1)
+	}
+	setupLog.Info("KEDA detection", "available", kedaAvailable, "prometheusAddress", prometheusAddress)
+
 	if err = controller.SetupIndexes(context.Background(), mgr); err != nil {
 		setupLog.Error(err, "unable to set up field indexes")
 		os.Exit(1)
@@ -211,6 +225,9 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("agentservice-controller"),
+
+		KEDAAvailable:     kedaAvailable,
+		PrometheusAddress: prometheusAddress,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentService")
 		os.Exit(1)

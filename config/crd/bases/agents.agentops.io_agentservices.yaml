@@ -100,6 +100,15 @@ spec:
                     maximum: 100
                     minimum: 1
                     type: integer
+                  targetSessionsPerPod:
+                    description: |-
+                      TargetSessionsPerPod scales on active sessions: the replica count follows
+                      agentops_agentservice_active_sessions divided by this value.
+                      It takes effect only when KEDA is installed and the operator has a
+                      --prometheus-address; otherwise it is ignored and CPU/memory apply.
+                    format: int32
+                    minimum: 1
+                    type: integer
                 type: object
                 x-kubernetes-validations:
                 - message: maxReplicas must be >= minReplicas

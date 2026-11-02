@@ -68,7 +68,10 @@ var _ = BeforeSuite(func() {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "config", "crd", "bases"),
+			filepath.Join("testdata", "crds"), // stand-in KEDA ScaledObject CRD
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -93,8 +96,12 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(SetupIndexes(ctx, mgr)).To(Succeed())
+	kedaAvailable, err := DetectKEDA(cfg)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(kedaAvailable).To(BeTrue(), "the stand-in ScaledObject CRD should be discovered")
 	Expect((&AgentServiceReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Recorder: mgr.GetEventRecorderFor("test"),
+		KEDAAvailable: kedaAvailable, PrometheusAddress: testPrometheusAddress,
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&AgentRuntimeReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&AgentPoolReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr)).To(Succeed())

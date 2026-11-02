@@ -144,6 +144,14 @@ type AutoscalingSpec struct {
 	// +kubebuilder:validation:Maximum=100
 	// +optional
 	TargetMemoryUtilizationPercentage *int32 `json:"targetMemoryUtilizationPercentage,omitempty"`
+
+	// TargetSessionsPerPod scales on active sessions: the replica count follows
+	// agentops_agentservice_active_sessions divided by this value.
+	// It takes effect only when KEDA is installed and the operator has a
+	// --prometheus-address; otherwise it is ignored and CPU/memory apply.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TargetSessionsPerPod *int32 `json:"targetSessionsPerPod,omitempty"`
 }
 
 // LocalObjectReference references an object in the same namespace.

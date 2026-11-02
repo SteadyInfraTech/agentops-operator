@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 
 	agentsv1alpha1 "github.com/SteadyInfraTech/agentops-operator/api/v1alpha1"
@@ -298,5 +299,98 @@ func TestDrainSafeCondition(t *testing.T) {
 				t.Errorf("message %q, observedGeneration %d", c.Message, c.ObservedGeneration)
 			}
 		})
+	}
+}
+
+func TestMutateScaledObject(t *testing.T) {
+	svc := &agentsv1alpha1.AgentService{
+		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"},
+		Spec: agentsv1alpha1.AgentServiceSpec{Autoscaling: &agentsv1alpha1.AutoscalingSpec{
+			Enabled: true, MinReplicas: 2, MaxReplicas: 6,
+			TargetCPUUtilizationPercentage: ptr.To[int32](75),
+			TargetSessionsPerPod:           ptr.To[int32](8),
+		}},
+	}
+	if !SessionScalingRequested(svc) {
+		t.Fatal("target set and autoscaling enabled should request session scaling")
+	}
+
+	so := NewScaledObject(svc)
+	// A field added by KEDA or a webhook must survive.
+	_ = unstructured.SetNestedField(so.Object, int64(30), "spec", "pollingInterval")
+	if err := MutateScaledObject(so, svc, "http://prom:9090"); err != nil {
+		t.Fatal(err)
+	}
+	first := so.DeepCopy()
+	if err := MutateScaledObject(so, svc, "http://prom:9090"); err != nil {
+		t.Fatal(err)
+	}
+	if !equality.Semantic.DeepEqual(first.Object, so.Object) {
+		t.Error("a second mutate must be a no-op")
+	}
+	if v, _, _ := unstructured.NestedInt64(so.Object, "spec", "pollingInterval"); v != 30 {
+		t.Errorf("pollingInterval = %d, field set by someone else was dropped", v)
+	}
+
+	triggers, _, _ := unstructured.NestedSlice(so.Object, "spec", "triggers")
+	if len(triggers) != 2 {
+		t.Fatalf("triggers = %v, want sessions + cpu", triggers)
+	}
+	md := triggers[0].(map[string]interface{})["metadata"].(map[string]interface{})
+	if md["threshold"] != "8" || md["serverAddress"] != "http://prom:9090" ||
+		md["query"] != `sum(agentops_agentservice_active_sessions{namespace="ns",name="a"})` {
+		t.Errorf("prometheus trigger metadata = %v", md)
+	}
+	if triggers[1].(map[string]interface{})["type"] != "cpu" {
+		t.Errorf("second trigger = %v", triggers[1])
+	}
+	if w, _, _ := unstructured.NestedInt64(so.Object, "spec", "advanced", "horizontalPodAutoscalerConfig",
+		"behavior", "scaleDown", "stabilizationWindowSeconds"); w != int64(statefulScaleDownWindowSeconds) {
+		t.Errorf("stateful scale-down window = %d", w)
+	}
+
+	svc.Spec.Sessions = &agentsv1alpha1.SessionsSpec{State: agentsv1alpha1.SessionStateless}
+	if err := MutateScaledObject(so, svc, "http://prom:9090"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := unstructured.NestedMap(so.Object, "spec", "advanced", "horizontalPodAutoscalerConfig",
+		"behavior", "scaleDown"); found {
+		t.Error("stateless should drop the scale-down pacing")
+	}
+
+	svc.Spec.Autoscaling.TargetSessionsPerPod = nil
+	if SessionScalingRequested(svc) {
+		t.Error("no target means no session scaling")
+	}
+}
+
+func TestScaledObjectKeepsTheHPADefaultCPUTarget(t *testing.T) {
+	svc := &agentsv1alpha1.AgentService{
+		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"},
+		Spec: agentsv1alpha1.AgentServiceSpec{Autoscaling: &agentsv1alpha1.AutoscalingSpec{
+			Enabled: true, MinReplicas: 1, MaxReplicas: 3, TargetSessionsPerPod: ptr.To[int32](5),
+		}},
+	}
+	so := NewScaledObject(svc)
+	if err := MutateScaledObject(so, svc, "http://prom:9090"); err != nil {
+		t.Fatal(err)
+	}
+	triggers, _, _ := unstructured.NestedSlice(so.Object, "spec", "triggers")
+	if len(triggers) != 2 {
+		t.Fatalf("triggers = %v, want sessions + the default cpu", triggers)
+	}
+	cpu := triggers[1].(map[string]interface{})
+	if cpu["type"] != "cpu" || cpu["metadata"].(map[string]interface{})["value"] != "75" {
+		t.Errorf("default cpu trigger = %v, want 75%% like the HPA", cpu)
+	}
+
+	// Memory alone replaces the default, as it does for the HPA.
+	svc.Spec.Autoscaling.TargetMemoryUtilizationPercentage = ptr.To[int32](60)
+	if err := MutateScaledObject(so, svc, "http://prom:9090"); err != nil {
+		t.Fatal(err)
+	}
+	triggers, _, _ = unstructured.NestedSlice(so.Object, "spec", "triggers")
+	if len(triggers) != 2 || triggers[1].(map[string]interface{})["type"] != "memory" {
+		t.Errorf("triggers = %v, want sessions + memory only", triggers)
 	}
 }
