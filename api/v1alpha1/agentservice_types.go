@@ -122,6 +122,11 @@ type AgentServiceSpec struct {
 	// +optional
 	ServiceType corev1.ServiceType `json:"serviceType,omitempty"`
 
+	// Sessions declares how this agent holds and serves sessions. It drives the
+	// DrainSafe status condition. Omitted means Stateful over Request.
+	// +optional
+	Sessions *SessionsSpec `json:"sessions,omitempty"`
+
 	// NodeSelector for agent pods (e.g. to target GPU nodes).
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`

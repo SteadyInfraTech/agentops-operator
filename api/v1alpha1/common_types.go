@@ -28,6 +28,24 @@ const (
 	ConditionProgressing = "Progressing"
 	// ConditionDegraded indicates the resource is not operating as intended.
 	ConditionDegraded = "Degraded"
+	// ConditionDrainSafe indicates whether agent pods can be removed (scale-in,
+	// rollout, node drain) without cutting live sessions. It is True only when
+	// there is an explicit guarantee, so it never claims more than is delivered.
+	ConditionDrainSafe = "DrainSafe"
+)
+
+// Reasons of the DrainSafe condition.
+const (
+	// ReasonBestEffortOnly: a Stateless agent reached by independent requests.
+	// No session state is lost, but an in-flight request can be interrupted.
+	ReasonBestEffortOnly = "BestEffortOnly"
+	// ReasonDrainNotEnabled: sessions are long-lived connections and removing a
+	// pod cuts them; draining is not enabled for the agent.
+	ReasonDrainNotEnabled = "DrainNotEnabled"
+	// ReasonRequestTransportWithoutRouting: a Stateful agent reached by
+	// independent requests, which needs session-aware routing that does not
+	// exist yet.
+	ReasonRequestTransportWithoutRouting = "RequestTransportWithoutRouting"
 )
 
 // ModelSpec describes the LLM backing an agent. The operator does not call the
@@ -133,4 +151,45 @@ type LocalObjectReference struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
+}
+
+// SessionState says whether an agent keeps session state that is lost when its
+// pod goes away.
+// +kubebuilder:validation:Enum=Stateful;Stateless
+type SessionState string
+
+const (
+	// SessionStateful: the agent may hold session state in memory. This is the
+	// safe assumption and the default.
+	SessionStateful SessionState = "Stateful"
+	// SessionStateless: the agent holds no session state in memory.
+	SessionStateless SessionState = "Stateless"
+)
+
+// SessionTransport says how a session reaches its agent.
+// +kubebuilder:validation:Enum=Connection;Request
+type SessionTransport string
+
+const (
+	// TransportConnection: a session is one long-lived connection (WebSocket,
+	// SSE, gRPC stream).
+	TransportConnection SessionTransport = "Connection"
+	// TransportRequest: a session is a series of independent requests.
+	TransportRequest SessionTransport = "Request"
+)
+
+// SessionsSpec describes how an agent holds and serves sessions, so the
+// operator can report whether pods can be removed without cutting them.
+type SessionsSpec struct {
+	// State is whether the agent keeps session state in memory.
+	// Defaults to Stateful, the safe assumption.
+	// +kubebuilder:default=Stateful
+	// +optional
+	State SessionState `json:"state,omitempty"`
+
+	// Transport is how a session reaches the agent: one long-lived
+	// connection (Connection) or independent requests (Request).
+	// +kubebuilder:default=Request
+	// +optional
+	Transport SessionTransport `json:"transport,omitempty"`
 }

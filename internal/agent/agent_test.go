@@ -219,3 +219,44 @@ func TestMutateHPADefaultsToCPU(t *testing.T) {
 		t.Errorf("hpa spec = %+v", hpa.Spec)
 	}
 }
+
+func TestDrainSafeCondition(t *testing.T) {
+	svc := func(s *agentsv1alpha1.SessionsSpec) *agentsv1alpha1.AgentService {
+		a := &agentsv1alpha1.AgentService{}
+		a.Generation = 3
+		a.Spec.Sessions = s
+		return a
+	}
+	tests := []struct {
+		name       string
+		sessions   *agentsv1alpha1.SessionsSpec
+		wantReason string
+	}{
+		{"omitted is Stateful over Request", nil, agentsv1alpha1.ReasonRequestTransportWithoutRouting},
+		{"empty object takes the same defaults", &agentsv1alpha1.SessionsSpec{}, agentsv1alpha1.ReasonRequestTransportWithoutRouting},
+		{"stateless over request", &agentsv1alpha1.SessionsSpec{State: agentsv1alpha1.SessionStateless}, agentsv1alpha1.ReasonBestEffortOnly},
+		{"stateful over connection", &agentsv1alpha1.SessionsSpec{Transport: agentsv1alpha1.TransportConnection}, agentsv1alpha1.ReasonDrainNotEnabled},
+		{
+			"stateless over connection",
+			&agentsv1alpha1.SessionsSpec{State: agentsv1alpha1.SessionStateless, Transport: agentsv1alpha1.TransportConnection},
+			agentsv1alpha1.ReasonDrainNotEnabled,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := DrainSafeCondition(svc(tt.sessions))
+			if c.Type != agentsv1alpha1.ConditionDrainSafe {
+				t.Errorf("type = %q", c.Type)
+			}
+			if c.Status != metav1.ConditionFalse {
+				t.Errorf("status = %q, want False: no drain guarantee exists yet", c.Status)
+			}
+			if c.Reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", c.Reason, tt.wantReason)
+			}
+			if c.Message == "" || c.ObservedGeneration != 3 {
+				t.Errorf("message %q, observedGeneration %d", c.Message, c.ObservedGeneration)
+			}
+		})
+	}
+}

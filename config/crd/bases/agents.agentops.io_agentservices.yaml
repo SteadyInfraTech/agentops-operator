@@ -480,6 +480,30 @@ spec:
                 - NodePort
                 - LoadBalancer
                 type: string
+              sessions:
+                description: |-
+                  Sessions declares how this agent holds and serves sessions. It drives the
+                  DrainSafe status condition. Omitted means Stateful over Request.
+                properties:
+                  state:
+                    default: Stateful
+                    description: |-
+                      State is whether the agent keeps session state in memory.
+                      Defaults to Stateful, the safe assumption.
+                    enum:
+                    - Stateful
+                    - Stateless
+                    type: string
+                  transport:
+                    default: Request
+                    description: |-
+                      Transport is how a session reaches the agent: one long-lived
+                      connection (Connection) or independent requests (Request).
+                    enum:
+                    - Connection
+                    - Request
+                    type: string
+                type: object
               systemPrompt:
                 description: |-
                   SystemPrompt is passed to the agent as AGENT_SYSTEM_PROMPT.

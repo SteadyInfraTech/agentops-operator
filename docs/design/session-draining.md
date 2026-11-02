@@ -1,7 +1,10 @@
 # Design note: draining agents without dropping sessions
 
-Status: **step 1 (rollout and `preStop` baseline) is implemented; everything else is a
-proposal**, with open decisions below.
+Status: **step 1 (rollout and `preStop` baseline) and the `spec.sessions` field with the
+`DrainSafe` condition are implemented; everything else is a proposal**, with open decisions
+below. `DrainSafe` is always `False` until `lifecycle.drain` exists (step 3). `transport`
+defaults to `Request`, the plain-Service case, so a default `Stateful` agent honestly reports
+`RequestTransportWithoutRouting`.
 
 ## Problem
 

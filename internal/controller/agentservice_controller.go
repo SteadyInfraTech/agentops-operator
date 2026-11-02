@@ -86,6 +86,8 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.recordActiveSessions(ctx, svc); err != nil {
 		return ctrl.Result{}, err
 	}
+	// Derived from the spec alone, so it is set before any early return too.
+	meta.SetStatusCondition(&svc.Status.Conditions, agent.DrainSafeCondition(svc))
 
 	var rt *agentsv1alpha1.AgentRuntime
 	if ref := svc.Spec.RuntimeRef; ref != nil {
