@@ -168,7 +168,9 @@ Implemented:
 
 Status: the slow scale-in half is implemented (Stateful agents get a 15 min scale-down
 stabilization window and at most one pod removed per 5 min; Stateless keeps the Kubernetes
-defaults). Scaling on the sessions gauge is not.
+defaults). The policy does not limit one case: lowering `maxReplicas` below the current
+replica count scales straight to the new maximum. Scaling on the sessions gauge is not
+implemented.
 
 Wire `agentops_agentservice_active_sessions` into scaling (KEDA `prometheus` trigger or HPA
 external metric). The gauge is computed by the operator, so this needs no agent change.

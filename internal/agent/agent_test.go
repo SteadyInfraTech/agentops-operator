@@ -237,7 +237,20 @@ func TestMutateHPAScaleBehaviorFollowsSessionState(t *testing.T) {
 		t.Errorf("stateful policies = %+v", sd.Policies)
 	}
 	if hpa.Spec.Behavior.ScaleUp != nil {
-		t.Errorf("scale-up must keep the defaults, got %+v", hpa.Spec.Behavior.ScaleUp)
+		t.Errorf("scale-up must stay unset when absent, got %+v", hpa.Spec.Behavior.ScaleUp)
+	}
+
+	// The API server defaults ScaleUp; reconciling must not touch it, or every
+	// reconcile would look like a change.
+	serverScaleUp := &autoscalingv2.HPAScalingRules{StabilizationWindowSeconds: ptr.To[int32](0)}
+	hpa.Spec.Behavior.ScaleUp = serverScaleUp
+	before := hpa.DeepCopy()
+	MutateHPA(hpa, svc)
+	if !equality.Semantic.DeepEqual(before.Spec, hpa.Spec) {
+		t.Errorf("second mutate changed the spec:\n%+v\n%+v", before.Spec, hpa.Spec)
+	}
+	if hpa.Spec.Behavior.ScaleUp != serverScaleUp {
+		t.Errorf("scale-up was replaced: %+v", hpa.Spec.Behavior.ScaleUp)
 	}
 
 	svc.Spec.Sessions = &agentsv1alpha1.SessionsSpec{State: agentsv1alpha1.SessionStateless}

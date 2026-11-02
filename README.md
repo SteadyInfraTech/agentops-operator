@@ -207,7 +207,9 @@ config/                Kustomize manifests (CRDs, RBAC, manager, samples)
   available as a better signal (e.g. a KEDA `prometheus` trigger) but is not wired in yet.
   For Stateful agents (the default) the HPA scales in slowly: a 15 min stabilization window
   and at most one pod per 5 min. This reduces how often sessions are cut; it does not choose
-  which pod is removed. `sessions.state: Stateless` keeps the Kubernetes defaults.
+  which pod is removed. The policy does not limit one case: lowering `maxReplicas` below the
+  current replica count scales straight to the new maximum. `sessions.state: Stateless`
+  keeps the Kubernetes defaults.
 - Scale-in, rollouts and node drains can terminate a pod that is serving a session: the
   operator sets no termination grace period or drain hook. See
   [docs/design/session-draining.md](docs/design/session-draining.md).
