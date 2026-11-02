@@ -222,8 +222,50 @@ func (r *AgentServiceReconciler) reconcileAutoscaler(ctx context.Context, svc *a
 		if err := r.deleteOwnedScaledObject(ctx, svc); err != nil {
 			return err
 		}
+		// KEDA's HPA outlives the ScaledObject for a moment (it is garbage
+		// collected), and two HPAs on one Deployment stop it from scaling at
+		// all. Wait for it to go; the HPA watch re-enqueues us when it does.
+		if agent.HPAEnabled(svc) {
+			pending, err := r.kedaHPAPending(ctx, svc)
+			if err != nil {
+				return err
+			}
+			if pending {
+				r.Recorder.Event(svc, corev1.EventTypeNormal, "WaitingForKEDAHPA",
+					"waiting for the HorizontalPodAutoscaler KEDA created to be removed before creating ours")
+				return nil
+			}
+		}
 	}
 	return r.reconcileHPA(ctx, svc, agent.HPAEnabled(svc))
+}
+
+// kedaHPAPending reports whether an HPA owned by the ScaledObject named after
+// svc still targets its Deployment.
+func (r *AgentServiceReconciler) kedaHPAPending(ctx context.Context, svc *agentsv1alpha1.AgentService) (bool, error) {
+	var list autoscalingv2.HorizontalPodAutoscalerList
+	if err := r.List(ctx, &list, client.InNamespace(svc.Namespace)); err != nil {
+		return false, fmt.Errorf("listing HorizontalPodAutoscalers: %w", err)
+	}
+	for i := range list.Items {
+		h := &list.Items[i]
+		if t := h.Spec.ScaleTargetRef; t.Kind == "Deployment" && t.Name == svc.Name && ownedByServiceScaledObject(h, svc) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ownedByServiceScaledObject reports whether hpa is owned by the KEDA
+// ScaledObject named after svc, i.e. the HPA KEDA made for our ScaledObject.
+func ownedByServiceScaledObject(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha1.AgentService) bool {
+	for _, o := range hpa.OwnerReferences {
+		if o.Kind == agent.ScaledObjectGVK.Kind && o.Name == svc.Name &&
+			strings.HasPrefix(o.APIVersion, agent.ScaledObjectGVK.Group+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // foreignHPA returns the name of an HPA, not created by this operator or by
@@ -250,13 +292,7 @@ func isForeignHPA(hpa *autoscalingv2.HorizontalPodAutoscaler, svc *agentsv1alpha
 	if t.Kind != "Deployment" || t.Name != svc.Name || metav1.IsControlledBy(hpa, svc) {
 		return false
 	}
-	for _, o := range hpa.OwnerReferences {
-		if o.Kind == agent.ScaledObjectGVK.Kind && o.Name == svc.Name &&
-			strings.HasPrefix(o.APIVersion, agent.ScaledObjectGVK.Group+"/") {
-			return false
-		}
-	}
-	return true
+	return !ownedByServiceScaledObject(hpa, svc)
 }
 
 // servicesForScaledObject enqueues the AgentService a ScaledObject is named

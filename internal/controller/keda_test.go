@@ -174,6 +174,51 @@ var _ = Describe("AgentService scaling on sessions with KEDA", func() {
 		Eventually(gone(hpa(ns, "a4")), timeout, interval).Should(BeTrue())
 	})
 
+	It("waits for KEDA's HPA to disappear before creating its own HPA", func() {
+		ns := newNamespace()
+		Expect(k8sClient.Create(ctx, &agentsv1alpha1.AgentService{
+			ObjectMeta: metav1.ObjectMeta{Name: "a5", Namespace: ns},
+			Spec: agentsv1alpha1.AgentServiceSpec{
+				Image: "ghcr.io/example/agent:1.0",
+				Autoscaling: &agentsv1alpha1.AutoscalingSpec{
+					Enabled: true, MinReplicas: 1, MaxReplicas: 4, TargetSessionsPerPod: ptr.To[int32](5),
+				},
+			},
+		})).To(Succeed())
+		Eventually(scaledObject(ns, "a5"), timeout, interval).Should(Succeed())
+		so := agent.NewScaledObject(&agentsv1alpha1.AgentService{ObjectMeta: metav1.ObjectMeta{Name: "a5", Namespace: ns}})
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "a5"}, so)).To(Succeed())
+
+		By("standing in for the HPA KEDA creates (envtest has no KEDA and no garbage collector)")
+		kedas := &autoscalingv2.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "keda-hpa-a5", Namespace: ns,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "keda.sh/v1alpha1", Kind: "ScaledObject", Name: "a5", UID: so.GetUID(),
+				}},
+			},
+			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "a5"},
+				MinReplicas:    ptr.To[int32](1),
+				MaxReplicas:    4,
+			},
+		}
+		Expect(k8sClient.Create(ctx, kedas)).To(Succeed())
+
+		By("removing the target: the ScaledObject goes, our HPA is held back")
+		Eventually(func() error {
+			s := getService(ns, "a5")()
+			s.Spec.Autoscaling.TargetSessionsPerPod = nil
+			return k8sClient.Update(ctx, s)
+		}, timeout, interval).Should(Succeed())
+		Eventually(gone(scaledObject(ns, "a5")), timeout, interval).Should(BeTrue())
+		Consistently(gone(hpa(ns, "a5")), "3s", interval).Should(BeTrue())
+
+		By("creating our HPA once KEDA's is gone")
+		Expect(k8sClient.Delete(ctx, kedas)).To(Succeed())
+		Eventually(hpa(ns, "a5"), timeout, interval).Should(Succeed())
+	})
+
 	It("keeps the HPA and leaves a ScaledObject alone when no target is set", func() {
 		ns := newNamespace()
 		Expect(k8sClient.Create(ctx, &agentsv1alpha1.AgentService{
@@ -214,6 +259,7 @@ func TestIsForeignHPA(t *testing.T) {
 		{"HPA owned by the operator", hpa("Deployment", "a", ours), false},
 		{"HPA created by KEDA for our ScaledObject", hpa("Deployment", "a", keda), false},
 		{"HPA created by KEDA for another ScaledObject", hpa("Deployment", "a", otherKeda), true},
+		{"unrelated owner with our name", hpa("Deployment", "a", metav1.OwnerReference{APIVersion: "example.com/v1", Kind: "Thing", Name: "a", UID: "x"}), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
