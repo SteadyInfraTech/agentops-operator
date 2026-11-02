@@ -63,7 +63,7 @@ type AgentServiceReconciler struct {
 
 // Reconcile drives the generated workload objects towards the AgentService spec
 // and reports their observed state back into AgentService.status.
-func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, reconcileErr error) {
 	log := logf.FromContext(ctx)
 
 	svc := &agentsv1alpha1.AgentService{}
@@ -79,6 +79,20 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 	orig := svc.DeepCopy()
+
+	// Derived from the spec alone, so it is set before anything that can fail,
+	// and the deferred patch persists it (and any other status change) on every
+	// return. A failed patch never hides the reconcile error that came first.
+	meta.SetStatusCondition(&svc.Status.Conditions, agent.DrainSafeCondition(svc))
+	defer func() {
+		if statusErr := r.patchStatus(ctx, orig, svc); statusErr != nil {
+			if reconcileErr == nil {
+				reconcileErr = statusErr
+			} else {
+				reconcileErr = fmt.Errorf("%w; persisting status: %v", reconcileErr, statusErr)
+			}
+		}
+	}()
 
 	// Recorded before any early return so the gauge stays current even while
 	// the workload is blocked (e.g. a missing AgentRuntime). A failure is
@@ -97,14 +111,14 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			// The AgentRuntime watch re-triggers us once the runtime appears.
 			msg := fmt.Sprintf("AgentRuntime %q not found", ref.Name)
 			r.setBlocked(svc, agentsv1alpha1.AgentServicePending, "RuntimeNotFound", msg)
-			return ctrl.Result{}, r.patchStatus(ctx, orig, svc)
+			return ctrl.Result{}, nil
 		}
 	}
 
 	resolved := agent.Resolve(svc, rt)
 	if resolved.Image == "" {
 		r.setBlocked(svc, agentsv1alpha1.AgentServiceFailed, "NoImage", "no image set on AgentService or AgentRuntime")
-		return ctrl.Result{}, r.patchStatus(ctx, orig, svc)
+		return ctrl.Result{}, nil
 	}
 
 	dep, err := r.reconcileDeployment(ctx, svc, resolved)
@@ -119,9 +133,6 @@ func (r *AgentServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	r.updateStatus(svc, dep, resolved)
-	if err := r.patchStatus(ctx, orig, svc); err != nil {
-		return ctrl.Result{}, err
-	}
 	if orig.Status.Phase != svc.Status.Phase {
 		log.Info("phase changed", "from", orig.Status.Phase, "to", svc.Status.Phase)
 		r.Recorder.Eventf(svc, corev1.EventTypeNormal, "PhaseChanged", "%s -> %s", orig.Status.Phase, svc.Status.Phase)

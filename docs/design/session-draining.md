@@ -1,7 +1,10 @@
 # Design note: draining agents without dropping sessions
 
-Status: **step 1 (rollout and `preStop` baseline) is implemented; everything else is a
-proposal**, with open decisions below.
+Status: **step 1 (rollout and `preStop` baseline) and the `spec.sessions` field with the
+`DrainSafe` condition are implemented; everything else is a proposal**, with open decisions
+below. `DrainSafe` is always `False` until `lifecycle.drain` exists (step 3). `transport`
+defaults to `Request`, the plain-Service case, so a default `Stateful` agent honestly reports
+`RequestTransportWithoutRouting`.
 
 ## Problem
 
@@ -158,9 +161,8 @@ Implemented:
   is common for a process running as PID 1 without a handler.
 - A README section stating what is and is not guaranteed for an unmodified agent.
 
-Not yet implemented: `spec.sessions` (`state`, `transport`) and the `DrainSafe` condition
-above. They change the API, so they need regenerated CRDs and deepcopy code and ship as
-their own change.
+`spec.sessions` (`state`, `transport`) and the `DrainSafe` condition above are implemented.
+`DrainSafe` stays `False` until the drain contract of step 3 exists.
 
 ### Step 2: scale on sessions, and scale in slowly (no agent change)
 

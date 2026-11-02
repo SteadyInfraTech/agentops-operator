@@ -50,6 +50,7 @@ spec:
   autoscaling: { enabled: true, minReplicas: 1, maxReplicas: 5, targetCPUUtilizationPercentage: 70 }
   # probes:  { livenessPath: /healthz, readinessPath: /readyz, startupFailureThreshold: 60 }
   # metrics: { enabled: true, port: 9100, path: /metrics }
+  # sessions: { state: Stateful, transport: Request }   # both are the defaults
 ```
 
 ```console
@@ -61,6 +62,17 @@ support-agent   Running   1       1          2m
 Phases: `Pending` (e.g. runtime missing) → `Progressing` → `Running`, or `Degraded`
 (rollout stalled) / `Failed` (no image). Standard `Ready`/`Progressing`/`Degraded`
 conditions are also set, and `status.endpoint` holds the in-cluster URL.
+
+`spec.sessions` declares how the agent holds sessions: `state` is `Stateful` (default, the
+agent may keep session state in memory) or `Stateless`; `transport` is `Request` (default,
+independent requests) or `Connection` (WebSocket, SSE, gRPC stream). It drives the
+`DrainSafe` condition, which says whether pods can be removed (scale-in, rollout, node drain)
+without cutting live sessions. It is `True` only with an explicit guarantee, and no such
+mechanism exists yet, so it is currently always `False` with a reason: `BestEffortOnly`
+(Stateless over Request), `DrainNotEnabled` (Connection) or `RequestTransportWithoutRouting`
+(Stateful over Request, which needs session-aware routing). See
+[the design note](docs/design/session-draining.md).
+
 The `/scale` subresource is enabled, so `kubectl scale agent/support-agent --replicas=3` works when autoscaling is off.
 
 ### AgentSession scheduling
