@@ -161,9 +161,8 @@ Implemented:
   is common for a process running as PID 1 without a handler.
 - A README section stating what is and is not guaranteed for an unmodified agent.
 
-Not yet implemented: `spec.sessions` (`state`, `transport`) and the `DrainSafe` condition
-above. They change the API, so they need regenerated CRDs and deepcopy code and ship as
-their own change.
+`spec.sessions` (`state`, `transport`) and the `DrainSafe` condition above are implemented.
+`DrainSafe` stays `False` until the drain contract of step 3 exists.
 
 ### Step 2: scale on sessions, and scale in slowly (no agent change)
 
