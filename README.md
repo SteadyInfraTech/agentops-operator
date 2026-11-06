@@ -16,12 +16,19 @@ Pools and sessions sit on top of that for long-running, stateful agent workloads
 > Status: **MVP / `v1alpha1`**. APIs may change.
 
 > **API group changed.** The group is `agents.steadyinfra.com` (it was `agents.agentops.io`), and the pool
-> label is `agents.steadyinfra.com/pool`. There is no migration: the new CRDs are different resources. To
-> move an existing cluster, delete your `AgentSession`, `AgentPool` and `AgentService` objects (wait until
-> they are gone, so the old operator can remove what it created), delete the old CRDs, uninstall the old
-> operator, install this version, and recreate the objects under the new group. If you also run
-> `ai-agent-edge-tunnel`, delete its `AgentEdgeTunnel` objects first and wait for them to finish; see
-> [the design note](docs/design/edge-exposure.md) for the full order.
+> label is `agents.steadyinfra.com/pool`. There is no migration tool: the new CRDs are different resources, and
+> deleting an old CRD deletes all its objects. To move an existing cluster:
+> 1. **Back up** every old object: `kubectl get agentruntimes.agents.agentops.io,agentservices.agents.agentops.io,agentpools.agents.agentops.io,agentsessions.agents.agentops.io -A -o yaml > backup.yaml`.
+> 2. If you also run `ai-agent-edge-tunnel`, delete its `AgentEdgeTunnel` objects first and wait until they
+>    are gone, so its operator removes the Cloudflare resources.
+> 3. Delete the old `AgentSession`, `AgentService`, `AgentPool` and `AgentRuntime` objects (wait until they
+>    are gone, so the old operator can remove what it created), then the old CRDs, then uninstall the old operator.
+> 4. Install this version.
+> 5. Recreate from the backup under the new group, **runtimes first**: services with a `runtimeRef` stay
+>    `Pending` (`RuntimeNotFound`) until their `AgentRuntime` exists. Change `apiVersion` to
+>    `agents.steadyinfra.com/v1alpha1`, and rename the pool label key **in both places**: the labels on your
+>    `AgentService` objects and the `spec.selector` of your `AgentPool` objects (or keep the old key in both).
+>    A pool whose selector no longer matches any service has no capacity, and its sessions stay `Pending`.
 
 ## Custom resources
 
