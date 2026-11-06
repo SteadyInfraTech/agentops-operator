@@ -32,7 +32,7 @@ Everything the edge operator needs from AgentOps is already in `AgentSession`:
 | Field read by the edge operator | Meaning |
 |---|---|
 | `status.phase` | `Bound` means there is a target to expose. `Pending` waits. `Completed`, `Expired`, `Failed` end the tunnel. |
-| `status.endpoint` | In-cluster URL of the bound agent, `http://<svc>.<ns>.svc:<port>`. This becomes the connector's ingress target. Only that exact shape, with `<ns>` equal to the tunnel's own namespace, is accepted. |
+| `status.endpoint` | In-cluster URL of the bound agent, `http://<svc>.<ns>.svc:<port>`. This becomes the connector's ingress target. The parser currently also accepts an omitted port (defaults to 80) and an optional trailing `/`; these are current behaviour, not guaranteed contract. `<ns>` must equal the tunnel's own namespace. |
 | `metadata.uid` | Identity of the session the tunnel was created for (see below). |
 
 `spec.maxDurationSeconds` is deliberately **not** read. AgentOps already turns it into a phase change
@@ -106,8 +106,9 @@ Reconciliation, in addition to what the operator does today:
    session whose endpoint is rejected or changes terminates the tunnel). A session that is already
    `Completed`, `Expired` or `Failed` is not waited for: terminal beats pending, so an object first
    reconciled after the session ended goes straight to Terminated. Clients should treat only
-   `Terminated` as final. Nothing is created in Cloudflare while Pending; status says what it is
-   waiting for. A missing session is retried, not failed, so the two objects can be applied in
+   `Terminated` as final. While waiting for an unpinned session the operator provisions no
+   Cloudflare resources; once pinned, Cloudflare resources can exist while the tunnel is still
+   `Pending`. Status says what it is waiting for. A missing session is retried, not failed, so the two objects can be applied in
    either order.
 2. **Active**: the session is `Bound`. Its UID and endpoint are recorded in status
    (`status.sessionUID`, `status.sessionEndpoint`) **before** anything is created, and the
