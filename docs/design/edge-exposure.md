@@ -1,12 +1,12 @@
 # Design note: exposing a session to the outside world
 
-Status: **proposal; decisions recorded below.** Nothing here is implemented yet. The group
-renames it assumes are **pending**: until [agentops-operator#9](https://github.com/SteadyInfraTech/agentops-operator/pull/9)
-and [ai-agent-edge-tunnel#5](https://github.com/SteadyInfraTech/ai-agent-edge-tunnel/pull/5) are
-merged, the code still registers `agents.agentops.io` and the bare `agentops.io`. It describes how
-[`ai-agent-edge-tunnel`](https://github.com/SteadyInfraTech/ai-agent-edge-tunnel) (a separate
-operator that creates short-lived Cloudflare tunnels) attaches to an `AgentSession` without the
-two projects sharing a repository, a Go module or a release cycle.
+Status: **the edge side is implemented** in
+[`ai-agent-edge-tunnel`](https://github.com/SteadyInfraTech/ai-agent-edge-tunnel)
+(`spec.sessionRef`, ai-agent-edge-tunnel#6), and both API groups are renamed to `steadyinfra.com`
+(agentops-operator#9, ai-agent-edge-tunnel#5). It has not been run against a real cluster with both
+operators together. The shared client library (decision 4) is not built yet. This note describes how
+`ai-agent-edge-tunnel` (a separate operator that creates short-lived Cloudflare tunnels) attaches to
+an `AgentSession` without the two projects sharing a repository, a Go module or a release cycle.
 
 ## Goal
 
@@ -32,8 +32,7 @@ Everything the edge operator needs from AgentOps is already in `AgentSession`:
 | Field read by the edge operator | Meaning |
 |---|---|
 | `status.phase` | `Bound` means there is a target to expose. `Pending` waits. `Completed`, `Expired`, `Failed` end the tunnel. |
-| `status.endpoint` | In-cluster URL of the bound agent, `http://<svc>.<ns>.svc:<port>`. This becomes the connector's ingress target. |
-| `status.assignedAgent` | The `AgentService` name; shown in the edge object's status for debugging. |
+| `status.endpoint` | In-cluster URL of the bound agent, `http://<svc>.<ns>.svc:<port>`. This becomes the connector's ingress target. Only that exact shape, with `<ns>` equal to the tunnel's own namespace, is accepted. |
 | `metadata.uid` | Identity of the session the tunnel was created for (see below). |
 
 `spec.maxDurationSeconds` is deliberately **not** read. AgentOps already turns it into a phase change
@@ -101,19 +100,28 @@ current "expose this Service" behaviour for anything that is not an `AgentSessio
 
 Reconciliation, in addition to what the operator does today:
 
-1. **Pending**: the session is not `Bound` (or does not exist yet). Nothing is created in
-   Cloudflare; status says what it is waiting for. A missing session is retried, not failed, so
-   the two objects can be applied in either order.
-2. **Active**: the session is `Bound`. The connector's ingress target is taken from
-   `status.endpoint`. The session reference and the resolved endpoint are recorded in status.
-3. **Terminated**: the session reaches `Completed`, `Expired` or `Failed`, or is deleted. The
-   edge operator removes the connector, DNS, Access application and tunnel in its usual order,
-   then marks the object `Terminated`.
-4. **Re-binding**: if the session's `status.assignedAgent` changes, the connector is updated to
-   the new endpoint; the hostname and Access policy are unchanged.
+1. **Pending**: the session does not exist yet, is not `Bound`, or exposes an endpoint the edge
+   operator will not accept. Nothing is created in Cloudflare; status says what it is waiting for.
+   A missing session is retried, not failed, so the two objects can be applied in either order.
+2. **Active**: the session is `Bound`. Its UID and endpoint are recorded in status
+   (`status.sessionUID`, `status.sessionEndpoint`) **before** anything is created, and the
+   connector's ingress target is the recorded endpoint.
+3. **Terminated**: the session reaches `Completed`, `Expired` or `Failed`, is deleted, has a
+   different UID, is being deleted, or is bound to a different endpoint. The edge operator removes
+   the connector, DNS, Access application and tunnel in its usual order, then marks the object
+   `Terminated`. A session that merely reports an unexpected phase ends nothing: the tunnel keeps
+   running and the TTL cap and connector upkeep continue.
+4. **Re-binding ends the tunnel; it does not re-point it.** If the session's `status.endpoint`
+   changes after the tunnel was bound, the tunnel is terminated. An earlier draft of this note
+   updated the connector in place. cloudflared does not reload its config, and silently re-pointing
+   an Access-protected hostname at a different agent is the riskier default. A client that needs a
+   new hostname for the new binding creates a new `AgentEdgeTunnel`.
+
+The session is read as `unstructured` and polled every 10 seconds, not watched, so the edge
+operator starts without AgentOps installed. A tunnel can outlive its session by up to that long.
 
 Because the edge object only *reads* the session, it never needs write access to AgentOps
-resources. RBAC: `get`, `list`, `watch` on `agentsessions` in the namespaces it manages.
+resources. RBAC: `get` on `agentsessions` in the namespaces it manages (polling needs no `list` or `watch`).
 
 ## API group
 
