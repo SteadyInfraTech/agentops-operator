@@ -100,8 +100,10 @@ current "expose this Service" behaviour for anything that is not an `AgentSessio
 
 Reconciliation, in addition to what the operator does today:
 
-1. **Pending**: the session does not exist yet, is not `Bound`, or exposes an endpoint the edge
-   operator will not accept. Nothing is created in Cloudflare; status says what it is waiting for.
+1. **Pending**: the session does not exist yet, is `Pending` (not yet `Bound`), or exposes an
+   endpoint the edge operator will not accept. A session that is already `Completed`, `Expired` or
+   `Failed` is not waited for: terminal beats pending, so an object first reconciled after the session
+   ended goes straight to Terminated. Clients should treat only `Terminated` as final. Nothing is created in Cloudflare; status says what it is waiting for.
    A missing session is retried, not failed, so the two objects can be applied in either order.
 2. **Active**: the session is `Bound`. Its UID and endpoint are recorded in status
    (`status.sessionUID`, `status.sessionEndpoint`) **before** anything is created, and the
@@ -118,7 +120,10 @@ Reconciliation, in addition to what the operator does today:
    new hostname for the new binding creates a new `AgentEdgeTunnel`.
 
 The session is read as `unstructured` and polled every 10 seconds, not watched, so the edge
-operator starts without AgentOps installed. A tunnel can outlive its session by up to that long.
+operator starts without AgentOps installed. A tunnel can outlive its session by roughly that long, and longer if the controller, the API
+server or Cloudflare cleanup is failing: the interval is a polling period, not a deadline. The
+optional `spec.ttl` is also enforced by reconciliation, so it is a cap that holds while the operator
+is healthy, not an independent cutoff.
 
 Because the edge object only *reads* the session, it never needs write access to AgentOps
 resources. RBAC: `get` on `agentsessions` in the namespaces it manages (polling needs no `list` or `watch`).
