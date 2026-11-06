@@ -16,26 +16,13 @@ Pools and sessions sit on top of that for long-running, stateful agent workloads
 > Status: **MVP / `v1alpha1`**. APIs may change.
 
 > **API group changed.** The group is `agents.steadyinfra.com` (it was `agents.agentops.io`), and the pool
-> label is `agents.steadyinfra.com/pool`. There is no migration tool: the new CRDs are different resources, and
-> deleting an old CRD deletes all its objects. To move an existing cluster:
-> 1. **Back up** every old object: `kubectl get agentruntimes.agents.agentops.io,agentservices.agents.agentops.io,agentpools.agents.agentops.io,agentsessions.agents.agentops.io -A -o yaml > backup.yaml`.
-> 2. If you also run `ai-agent-edge-tunnel`, back up its objects too (`kubectl get agentedgetunnels.agentops.io -A -o yaml`),
->    then delete them and wait until they are gone, so its operator removes the Cloudflare resources.
->    Recreate them last (step 5), once their target services are running.
-> 3. Delete the old `AgentSession`, `AgentService`, `AgentPool` and `AgentRuntime` objects (wait until they
->    are gone, so the old operator can remove what it created), then the old CRDs, then uninstall the old operator.
-> 4. Install this version.
-> 5. Recreate from the backup under the new group, **runtimes first**: services with a `runtimeRef` stay
->    `Pending` (`RuntimeNotFound`) until their `AgentRuntime` exists. Change `apiVersion` to
->    `agents.steadyinfra.com/v1alpha1`, and rename the pool label key **in both places**: the labels on your
->    `AgentService` objects and the `spec.selector` of your `AgentPool` objects (or keep the old key in both).
->    A pool whose selector no longer matches any service has no capacity, and its sessions stay `Pending`.
->
->    **Session state does not restore.** Kubernetes clears `status` when an object is created, so a recreated
->    `AgentSession` starts over: it is `Pending`, binds again and gets a new binding time. Recreate only the
->    sessions that should still be running. Skip any that had expired, failed or completed, because one with
->    `spec.completed: false` would bind again and take capacity. Recreate `AgentEdgeTunnel` objects after
->    their sessions are `Bound`.
+> label is `agents.steadyinfra.com/pool`. This is an unreleased `v1alpha1`, so **there is no supported migration**
+> and objects must not be restored from a backup: restoring would carry over server-generated metadata, status
+> and finalizers that the new operators do not understand. To move a dev cluster, delete everything under the
+> old group, **wait** until it is gone (so the old operators remove what they created, including Cloudflare
+> resources for `ai-agent-edge-tunnel`), delete the old CRDs, uninstall the old operators, install this version,
+> and write your objects again under `agents.steadyinfra.com/v1alpha1`: `AgentRuntime` first, and the pool label
+> key renamed in both the `AgentService` labels and the `AgentPool` `spec.selector`.
 
 ## Custom resources
 
