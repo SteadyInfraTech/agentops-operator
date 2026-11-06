@@ -1,6 +1,6 @@
 # Design note: exposing a session to the outside world
 
-Status: **proposal.** Nothing here is implemented. It describes how
+Status: **proposal; decisions recorded below.** Nothing here is implemented except the group rename (separate PRs). It describes how
 [`ai-agent-edge-tunnel`](https://github.com/SteadyInfraTech/ai-agent-edge-tunnel) (a separate
 operator that creates short-lived Cloudflare tunnels) attaches to an `AgentSession` without the
 two projects sharing a repository, a Go module or a release cycle.
@@ -46,7 +46,7 @@ holds (see open decisions).
 ## The edge side (in `ai-agent-edge-tunnel`)
 
 ```yaml
-apiVersion: edge.agentops.io/v1alpha1     # see "API group" below
+apiVersion: edge.steadyinfra.com/v1alpha1     # see "API group" below
 kind: AgentEdgeTunnel
 metadata:
   name: session-8f92
@@ -78,18 +78,17 @@ resources. RBAC: `get`, `list`, `watch` on `agentsessions` in the namespaces it 
 
 ## API group
 
-Today the two projects use different groups for unrelated reasons:
+An API group should be a DNS name the project owns. `agentops.io` is not one, so both projects
+move to `steadyinfra.com`, one group per concern:
 
 | Project | Group |
 |---|---|
-| agentops-operator | `agents.agentops.io` |
-| ai-agent-edge-tunnel | `agentops.io` (the bare parent domain) |
+| agentops-operator | `agents.steadyinfra.com` (was `agents.agentops.io`) |
+| ai-agent-edge-tunnel | `edge.steadyinfra.com` (was the bare `agentops.io`) |
 
-The bare `agentops.io` group is a poor home for anything: it claims the whole namespace, and it
-looks like the parent of `agents.agentops.io`. Proposal: move `AgentEdgeTunnel` to
-**`edge.agentops.io`**, one group per concern (`agents.`, `edge.`). Both projects are `v1alpha1`
-and unreleased, so this is a rename with no migration. It is the only part of this note that needs
-a coordinated change, and it only touches the edge repository.
+Both are `v1alpha1` and unreleased, so this is a rename with no migration. It is done in two
+separate PRs, one per repository (agentops-operator#9 and ai-agent-edge-tunnel#5). The label and
+finalizer keys that used `agentops.io/` move with them.
 
 ## Why not the alternatives
 
@@ -101,22 +100,29 @@ a coordinated change, and it only touches the edge repository.
 - **A monorepo.** The projects have different blast radii (the edge operator holds a Cloudflare
   API token; AgentOps holds none) and should stay separately deployable and reviewable.
 
-## Open decisions
+## Decisions
 
-1. **Group name**: `edge.agentops.io` (proposed) or another name.
-2. **Who tells the client the hostname.** Either the client reads the `AgentEdgeTunnel` it asked
-   for, or the edge operator writes the hostname back onto the `AgentSession` (an annotation
-   such as `edge.agentops.io/hostname`). Writing back means the edge operator needs `patch` on
-   sessions; reading means a client needs access to two kinds. Proposal: start with reading; add
-   the annotation only if a client needs it.
-3. **Who creates the `AgentEdgeTunnel`.** A client or platform controller that creates sessions
-   would create the matching edge object in the same transaction of intent. A small
-   `AgentSession`-to-`AgentEdgeTunnel` controller is possible later but would reintroduce the
-   coupling this note avoids, so it belongs in a third, optional component.
-4. **Session-to-pod routing.** Today a session binds to a Service, so the tunnel exposes the whole
-   service. Once `session-draining` introduces per-pod routing, the contract field
-   `status.endpoint` must keep meaning "the address a client should use", and the edge operator
-   should not need to change.
-5. **Per-session Access identity.** `security.allowedEmails` is static. Deriving the allowed
-   identity from `AgentSession.spec.userID` would tie the two, so it is deliberately left out of
-   this note.
+1. **Group names**: `agents.steadyinfra.com` and `edge.steadyinfra.com`. Decided.
+2. **How the client learns the hostname**: it reads `status.hostname` of the `AgentEdgeTunnel`
+   it asked for. The edge operator does not write to `AgentSession`, so it needs no `patch` on
+   sessions. If a client later needs the hostname on the session itself, an annotation can be
+   added without changing the contract. Decided.
+3. **Who creates the `AgentEdgeTunnel`**: the component that creates the `AgentSession`
+   (a gateway, backend or platform layer), not an operator. It is the only party that knows the
+   user's identity, and `security.allowedEmails` is exactly that identity; an automatic
+   session-to-tunnel controller would have to guess it or leave the tunnel public. The creator
+   sets an `ownerReference` from the `AgentEdgeTunnel` to the `AgentSession`, so Kubernetes
+   deletes the tunnel when the session is deleted. The edge operator also tears the tunnel down
+   when the session ends, so there are two independent safeguards. Decided.
+4. **Shared code**: a small client library (not an operator) that creates a session and its
+   edge object together, sets the owner reference, and returns the hostname, so every caller
+   does not repeat it. It depends on both API types and on neither operator, and lives in its
+   own module so the two operators stay independent. Not built yet.
+
+## Still open
+
+1. **Session-to-pod routing.** Today a session binds to a Service, so the tunnel exposes the whole
+   service. Once `session-draining` introduces per-pod routing, `status.endpoint` must keep
+   meaning "the address a client should use", and the edge operator should not need to change.
+2. **Per-session Access identity.** `security.allowedEmails` is static. Deriving the allowed
+   identity from `AgentSession.spec.userID` would tie the two, so it is deliberately left out.
