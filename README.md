@@ -15,6 +15,14 @@ Pools and sessions sit on top of that for long-running, stateful agent workloads
 
 > Status: **MVP / `v1alpha1`**. APIs may change.
 
+> **API group changed.** The group is `agents.steadyinfra.com` (it was `agents.agentops.io`), and the pool
+> label is `agents.steadyinfra.com/pool`. There is no migration: the new CRDs are different resources. To
+> move an existing cluster, delete your `AgentSession`, `AgentPool` and `AgentService` objects (wait until
+> they are gone, so the old operator can remove what it created), delete the old CRDs, uninstall the old
+> operator, install this version, and recreate the objects under the new group. If you also run
+> `ai-agent-edge-tunnel`, delete its `AgentEdgeTunnel` objects first and wait for them to finish; see
+> [the design note](docs/design/edge-exposure.md) for the full order.
+
 ## Custom resources
 
 | Kind | Short | Purpose |
