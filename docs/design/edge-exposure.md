@@ -101,10 +101,14 @@ current "expose this Service" behaviour for anything that is not an `AgentSessio
 Reconciliation, in addition to what the operator does today:
 
 1. **Pending**: the session does not exist yet, is `Pending` (not yet `Bound`), or exposes an
-   endpoint the edge operator will not accept. A session that is already `Completed`, `Expired` or
-   `Failed` is not waited for: terminal beats pending, so an object first reconciled after the session
-   ended goes straight to Terminated. Clients should treat only `Terminated` as final. Nothing is created in Cloudflare; status says what it is waiting for.
-   A missing session is retried, not failed, so the two objects can be applied in either order.
+   endpoint the edge operator will not accept. These are waited for only until the session's UID has
+   been recorded in status; after that, see Terminated and the unexpected-phase rule below (a pinned
+   session whose endpoint is rejected or changes terminates the tunnel). A session that is already
+   `Completed`, `Expired` or `Failed` is not waited for: terminal beats pending, so an object first
+   reconciled after the session ended goes straight to Terminated. Clients should treat only
+   `Terminated` as final. Nothing is created in Cloudflare while Pending; status says what it is
+   waiting for. A missing session is retried, not failed, so the two objects can be applied in
+   either order.
 2. **Active**: the session is `Bound`. Its UID and endpoint are recorded in status
    (`status.sessionUID`, `status.sessionEndpoint`) **before** anything is created, and the
    connector's ingress target is the recorded endpoint.
