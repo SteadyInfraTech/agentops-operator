@@ -19,8 +19,9 @@ Pools and sessions sit on top of that for long-running, stateful agent workloads
 > label is `agents.steadyinfra.com/pool`. There is no migration tool: the new CRDs are different resources, and
 > deleting an old CRD deletes all its objects. To move an existing cluster:
 > 1. **Back up** every old object: `kubectl get agentruntimes.agents.agentops.io,agentservices.agents.agentops.io,agentpools.agents.agentops.io,agentsessions.agents.agentops.io -A -o yaml > backup.yaml`.
-> 2. If you also run `ai-agent-edge-tunnel`, delete its `AgentEdgeTunnel` objects first and wait until they
->    are gone, so its operator removes the Cloudflare resources.
+> 2. If you also run `ai-agent-edge-tunnel`, back up its objects too (`kubectl get agentedgetunnels.agentops.io -A -o yaml`),
+>    then delete them and wait until they are gone, so its operator removes the Cloudflare resources.
+>    Recreate them last (step 5), once their target services are running.
 > 3. Delete the old `AgentSession`, `AgentService`, `AgentPool` and `AgentRuntime` objects (wait until they
 >    are gone, so the old operator can remove what it created), then the old CRDs, then uninstall the old operator.
 > 4. Install this version.
@@ -29,6 +30,12 @@ Pools and sessions sit on top of that for long-running, stateful agent workloads
 >    `agents.steadyinfra.com/v1alpha1`, and rename the pool label key **in both places**: the labels on your
 >    `AgentService` objects and the `spec.selector` of your `AgentPool` objects (or keep the old key in both).
 >    A pool whose selector no longer matches any service has no capacity, and its sessions stay `Pending`.
+>
+>    **Session state does not restore.** Kubernetes clears `status` when an object is created, so a recreated
+>    `AgentSession` starts over: it is `Pending`, binds again and gets a new binding time. Recreate only the
+>    sessions that should still be running. Skip any that had expired, failed or completed, because one with
+>    `spec.completed: false` would bind again and take capacity. Recreate `AgentEdgeTunnel` objects after
+>    their sessions are `Bound`.
 
 ## Custom resources
 
