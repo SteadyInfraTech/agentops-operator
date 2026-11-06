@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: agentpools.agents.agentops.io
+  name: agentpools.agents.steadyinfra.com
 spec:
-  group: agents.agentops.io
+  group: agents.steadyinfra.com
   names:
     kind: AgentPool
     listKind: AgentPoolList

@@ -34,11 +34,11 @@ AgentRuntime ──(runtimeRef)──▶ AgentService ──owns──▶ Deploy
 ### AgentService
 
 ```yaml
-apiVersion: agents.agentops.io/v1alpha1
+apiVersion: agents.steadyinfra.com/v1alpha1
 kind: AgentService
 metadata:
   name: support-agent
-  labels: { agentops.io/pool: support }
+  labels: { agents.steadyinfra.com/pool: support }
 spec:
   runtimeRef: { name: echo-runtime }      # or: image: ghcr.io/acme/agent:1.2
   model:

@@ -43,11 +43,11 @@ type AgentPoolReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentpools,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentpools/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentpools/finalizers,verbs=update
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices,verbs=get;list;watch
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentsessions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentpools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentpools/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentpools/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentservices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentsessions,verbs=get;list;watch
 
 func (r *AgentPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	pool := &agentsv1alpha1.AgentPool{}

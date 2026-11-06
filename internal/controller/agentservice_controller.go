@@ -64,11 +64,11 @@ type AgentServiceReconciler struct {
 // deploymentKind is the kind of the workload an HPA must target to scale an agent.
 const deploymentKind = "Deployment"
 
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices/finalizers,verbs=update
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentruntimes,verbs=get;list;watch
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentsessions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentservices,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentservices/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentservices/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentruntimes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentsessions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete

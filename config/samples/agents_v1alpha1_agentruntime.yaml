@@ -1,4 +1,4 @@
-apiVersion: agents.agentops.io/v1alpha1
+apiVersion: agents.steadyinfra.com/v1alpha1
 kind: AgentRuntime
 metadata:
   name: echo-runtime

@@ -42,9 +42,9 @@ type AgentRuntimeReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentruntimes,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentruntimes/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentruntimes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentruntimes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentruntimes/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentruntimes/finalizers,verbs=update
 
 func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	rt := &agentsv1alpha1.AgentRuntime{}

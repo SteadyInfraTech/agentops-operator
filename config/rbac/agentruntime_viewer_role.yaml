@@ -1,7 +1,7 @@
 # This rule is not used by the project agentops-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants read-only access to agents.agentops.io resources.
+# Grants read-only access to agents.steadyinfra.com resources.
 # This role is intended for users who need visibility into these resources
 # without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
 
@@ -14,7 +14,7 @@ metadata:
   name: agentruntime-viewer-role
 rules:
 - apiGroups:
-  - agents.agentops.io
+  - agents.steadyinfra.com
   resources:
   - agentruntimes
   verbs:
@@ -22,7 +22,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - agents.agentops.io
+  - agents.steadyinfra.com
   resources:
   - agentruntimes/status
   verbs:

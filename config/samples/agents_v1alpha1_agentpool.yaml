@@ -1,4 +1,4 @@
-apiVersion: agents.agentops.io/v1alpha1
+apiVersion: agents.steadyinfra.com/v1alpha1
 kind: AgentPool
 metadata:
   name: support
@@ -7,5 +7,5 @@ metadata:
 spec:
   selector:
     matchLabels:
-      agentops.io/pool: support
+      agents.steadyinfra.com/pool: support
   maxSessionsPerReplica: 10

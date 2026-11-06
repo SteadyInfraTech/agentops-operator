@@ -4,35 +4,43 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: agentruntimes.agents.agentops.io
+  name: agentservices.agents.steadyinfra.com
 spec:
-  group: agents.agentops.io
+  group: agents.steadyinfra.com
   names:
-    kind: AgentRuntime
-    listKind: AgentRuntimeList
-    plural: agentruntimes
+    kind: AgentService
+    listKind: AgentServiceList
+    plural: agentservices
     shortNames:
-    - art
-    singular: agentruntime
+    - agsvc
+    - agent
+    singular: agentservice
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.framework
-      name: Framework
+    - jsonPath: .status.phase
+      name: Phase
       type: string
-    - jsonPath: .spec.image
-      name: Image
-      type: string
-    - jsonPath: .status.agentServices
-      name: Services
+    - jsonPath: .status.readyReplicas
+      name: Ready
       type: integer
+    - jsonPath: .status.replicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.endpoint
+      name: Endpoint
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: AgentRuntime is a reusable runtime template for AI agents.
+        description: |-
+          AgentService is the Schema for the agentservices API. It is the primary
+          AgentOps resource: one AgentService becomes a Deployment, a Service and
+          (optionally) a HorizontalPodAutoscaler.
         properties:
           apiVersion:
             description: |-
@@ -53,22 +61,66 @@ spec:
             type: object
           spec:
             description: |-
-              AgentRuntimeSpec describes a reusable execution environment for agents
-              (framework image, port, probes, resources). AgentServices reference a runtime
-              via spec.runtimeRef and may override any field.
+              AgentServiceSpec defines the desired state of an AI agent microservice.
+              Either image or runtimeRef must be set.
             properties:
               args:
                 description: Args passed to the entrypoint.
                 items:
                   type: string
                 type: array
+              autoscaling:
+                description: Autoscaling configures an HPA for this agent.
+                properties:
+                  enabled:
+                    description: Enabled creates an HPA for the agent Deployment.
+                    type: boolean
+                  maxReplicas:
+                    default: 5
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  minReplicas:
+                    default: 1
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  targetCPUUtilizationPercentage:
+                    default: 75
+                    description: TargetCPUUtilizationPercentage is the average CPU
+                      utilization target.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  targetMemoryUtilizationPercentage:
+                    description: TargetMemoryUtilizationPercentage is the average
+                      memory utilization target.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  targetSessionsPerPod:
+                    description: |-
+                      TargetSessionsPerPod scales on active sessions: the replica count follows
+                      agentops_agentservice_active_sessions divided by this value.
+                      It takes effect only when KEDA is installed and the operator has a
+                      --prometheus-address; otherwise it is ignored and CPU/memory apply.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: maxReplicas must be >= minReplicas
+                  rule: self.maxReplicas >= self.minReplicas
               command:
                 description: Command overrides the image entrypoint.
                 items:
                   type: string
                 type: array
               env:
-                description: Env applied to every agent using this runtime.
+                description: Env is appended after runtime env; entries with the same
+                  name override.
                 items:
                   description: EnvVar represents an environment variable present in
                     a Container.
@@ -185,15 +237,53 @@ spec:
                   - name
                   type: object
                 type: array
-              framework:
-                description: Framework is an informational label, e.g. "langgraph",
-                  "crewai", "autogen", "custom".
-                maxLength: 63
-                type: string
+              envFrom:
+                description: EnvFrom injects ConfigMaps/Secrets as environment variables.
+                items:
+                  description: EnvFromSource represents the source of a set of ConfigMaps
+                  properties:
+                    configMapRef:
+                      description: The ConfigMap to select from
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                        optional:
+                          description: Specify whether the ConfigMap must be defined
+                          type: boolean
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    prefix:
+                      description: An optional identifier to prepend to each key in
+                        the ConfigMap. Must be a C_IDENTIFIER.
+                      type: string
+                    secretRef:
+                      description: The Secret to select from
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                        optional:
+                          description: Specify whether the Secret must be defined
+                          type: boolean
+                      type: object
+                      x-kubernetes-map-type: atomic
+                  type: object
+                type: array
               image:
-                description: Image is the default container image for agents using
-                  this runtime.
-                minLength: 1
+                description: Image overrides the runtime image.
                 type: string
               imagePullPolicy:
                 description: ImagePullPolicy for the agent container.
@@ -203,7 +293,7 @@ spec:
                 - Never
                 type: string
               metrics:
-                description: Metrics configures Prometheus scraping.
+                description: Metrics overrides runtime metrics settings.
                 properties:
                   enabled:
                     default: true
@@ -223,15 +313,70 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
+              model:
+                description: Model configures the LLM used by the agent.
+                properties:
+                  apiKeySecretRef:
+                    description: |-
+                      APIKeySecretRef references a Secret key holding the provider API key.
+                      It is exposed to the container as AGENT_MODEL_API_KEY via secretKeyRef,
+                      so the plaintext value never appears in the AgentService or Deployment spec.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  endpoint:
+                    description: Endpoint overrides the provider base URL (useful
+                      for self-hosted models).
+                    pattern: ^https?://.+
+                    type: string
+                  name:
+                    description: Name of the model, e.g. "gpt-4o" or "claude-sonnet-4".
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  provider:
+                    description: Provider of the model, e.g. "openai", "anthropic",
+                      "vllm", "ollama".
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - provider
+                type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: NodeSelector for agent pods (e.g. to target GPU nodes).
+                type: object
               port:
-                default: 8080
-                description: Port the agent listens on for HTTP traffic.
+                description: Port the agent listens on. Defaults to the runtime port,
+                  or 8080.
                 format: int32
                 maximum: 65535
                 minimum: 1
                 type: integer
               probes:
-                description: Probes configures health checks.
+                description: Probes overrides runtime probe settings.
                 properties:
                   livenessPath:
                     default: /healthz
@@ -253,8 +398,15 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
+              replicas:
+                default: 1
+                description: Replicas is the static replica count, used when autoscaling
+                  is disabled.
+                format: int32
+                minimum: 0
+                type: integer
               resources:
-                description: Resources applied to the agent container.
+                description: Resources overrides the runtime resources when set.
                 properties:
                   claims:
                     description: |-
@@ -312,17 +464,115 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
-            required:
-            - image
+              runtimeRef:
+                description: |-
+                  RuntimeRef references an AgentRuntime in the same namespace that supplies
+                  defaults (image, port, probes, resources, env).
+                properties:
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              serviceAccountName:
+                description: |-
+                  ServiceAccountName for agent pods. When empty the namespace default is
+                  used. The API token is only mounted when a service account is set.
+                type: string
+              serviceType:
+                default: ClusterIP
+                description: ServiceType of the generated Service.
+                enum:
+                - ClusterIP
+                - NodePort
+                - LoadBalancer
+                type: string
+              sessions:
+                description: |-
+                  Sessions declares how this agent holds and serves sessions. It drives the
+                  DrainSafe status condition. Omitted means Stateful over Request.
+                properties:
+                  state:
+                    default: Stateful
+                    description: |-
+                      State is whether the agent keeps session state in memory.
+                      Defaults to Stateful, the safe assumption.
+                    enum:
+                    - Stateful
+                    - Stateless
+                    type: string
+                  transport:
+                    default: Request
+                    description: |-
+                      Transport is how a session reaches the agent: one long-lived
+                      connection (Connection) or independent requests (Request).
+                    enum:
+                    - Connection
+                    - Request
+                    type: string
+                type: object
+              systemPrompt:
+                description: |-
+                  SystemPrompt is passed to the agent as AGENT_SYSTEM_PROMPT.
+                  Do not place secrets here; it is stored in plaintext.
+                maxLength: 32768
+                type: string
+              tolerations:
+                description: Tolerations for agent pods.
+                items:
+                  description: |-
+                    The pod this Toleration is attached to tolerates any taint that matches
+                    the triple <key,value,effect> using the matching operator <operator>.
+                  properties:
+                    effect:
+                      description: |-
+                        Effect indicates the taint effect to match. Empty means match all taint effects.
+                        When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                      type: string
+                    key:
+                      description: |-
+                        Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                        If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                      type: string
+                    operator:
+                      description: |-
+                        Operator represents a key's relationship to the value.
+                        Valid operators are Exists and Equal. Defaults to Equal.
+                        Exists is equivalent to wildcard for value, so that a pod can
+                        tolerate all taints of a particular category.
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        TolerationSeconds represents the period of time the toleration (which must be
+                        of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                        it is not set, which means tolerate the taint forever (do not evict). Zero and
+                        negative values will be treated as 0 (evict immediately) by the system.
+                      format: int64
+                      type: integer
+                    value:
+                      description: |-
+                        Value is the taint value the toleration matches to.
+                        If the operator is Exists, the value should be empty, otherwise just a regular string.
+                      type: string
+                  type: object
+                type: array
+              tools:
+                description: |-
+                  Tools is the list of tool identifiers the agent is allowed to use,
+                  passed as a comma-separated AGENT_TOOLS variable.
+                items:
+                  type: string
+                maxItems: 64
+                type: array
             type: object
+            x-kubernetes-validations:
+            - message: one of image or runtimeRef is required
+              rule: has(self.image) || has(self.runtimeRef)
           status:
-            description: AgentRuntimeStatus defines the observed state of AgentRuntime.
+            description: AgentServiceStatus defines the observed state of AgentService.
             properties:
-              agentServices:
-                description: AgentServices is the number of AgentServices referencing
-                  this runtime.
-                format: int32
-                type: integer
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -382,13 +632,40 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              endpoint:
+                description: Endpoint is the in-cluster URL of the agent.
+                type: string
+              image:
+                description: Image is the resolved image currently deployed.
+                type: string
               observedGeneration:
-                description: ObservedGeneration is the last generation reconciled.
                 format: int64
+                type: integer
+              phase:
+                description: AgentServicePhase is a high-level summary of an AgentService
+                  lifecycle.
+                enum:
+                - Pending
+                - Progressing
+                - Running
+                - Degraded
+                - Failed
+                type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of agent pods passing readiness
+                  checks.
+                format: int32
+                type: integer
+              replicas:
+                description: Replicas is the current number of agent pods.
+                format: int32
                 type: integer
             type: object
         type: object
     served: true
     storage: true
     subresources:
+      scale:
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
       status: {}
