@@ -130,20 +130,19 @@ Both are `v1alpha1` and unreleased, so there is no migration tool. The renames a
 [ai-agent-edge-tunnel#5](https://github.com/SteadyInfraTech/ai-agent-edge-tunnel/pull/5)). The label
 and finalizer keys that used `agentops.io/` move with them.
 
-**Existing installations must clean up first.** The new edge operator does not recognise the old
-finalizer, and the new groups' CRDs are different resources. Upgrading in place would leave old
-tunnels, DNS records and Access applications in Cloudflare with nothing managing them. Order:
+**There is no supported migration, and objects must not be restored from a backup.** Restoring would
+carry over server-generated metadata, status, owner references to old UIDs and the old finalizer
+(`agentops.io/edge-tunnel-cleanup`), none of which the new operators understand. The new edge operator
+does not recognise the old finalizer, so tunnels from the old group would be left with nothing
+managing their Cloudflare resources. For a dev cluster that already has the old group:
 
-0. **Back up** every old object, `AgentRuntime` included: deleting a CRD deletes all its objects.
-1. Delete every `AgentEdgeTunnel` (old group) and **wait** until they are gone. The old operator's
-   finalizer removes the Cloudflare resources; if one is stuck, fix that before continuing.
-2. Delete the old `AgentSession`, `AgentService`, `AgentPool` and `AgentRuntime` objects, then the old CRDs.
-3. Uninstall the old operators and install the new ones.
-4. Recreate from the backup under the new groups, **`AgentRuntime` first**: an `AgentService` with a
-   `runtimeRef` stays `Pending` until its runtime exists. Rename the pool label key in the service
-   labels and in each `AgentPool` `spec.selector` together, or a pool matches nothing and its sessions
-   stay `Pending`.
-5. Check the Cloudflare dashboard for tunnels, DNS records and Access applications left behind.
+1. Delete every `AgentEdgeTunnel` (old group) and **wait** until they are gone, so the old operator's
+   finalizer removes the Cloudflare tunnel, DNS record and Access application. Fix anything stuck first.
+2. Delete the old `AgentSession`, `AgentService`, `AgentPool` and `AgentRuntime` objects, then the old
+   CRDs, then uninstall the old operators.
+3. Install the new operators and write the objects again under the new groups, `AgentRuntime` first,
+   renaming the pool label key in the service labels and each `AgentPool` `spec.selector` together.
+4. Check the Cloudflare dashboard for tunnels, DNS records and Access applications left behind.
 
 ## Why not the alternatives
 
