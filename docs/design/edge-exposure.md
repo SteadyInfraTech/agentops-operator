@@ -84,8 +84,10 @@ With `sessionRef`, **the session's phase ends the tunnel, not a timer.** Consequ
   Active, which is why a lifetime copied from the session would go stale.
 - `maxDurationSeconds: 0` (no limit) means the tunnel lives until the session reaches a terminal
   phase or is deleted. Nothing in the edge operator needs a finite remaining lifetime.
-- `spec.ttl`, if set, is a hard cap: the tunnel ends at `ttl` even if the session is still `Bound`.
-  Set it when a bounded exposure matters more than session continuity. It is optional.
+- `spec.ttl`, if set, starts after provisioning succeeds and caps the tunnel's active lifetime,
+  even if the session is still `Bound`. Provisioning retries can leave Cloudflare resources
+  allocated longer than `spec.ttl` before it starts. Set it when a bounded exposure matters more
+  than session continuity. It is optional.
 
 ### Pinning the session identity
 
