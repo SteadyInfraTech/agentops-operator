@@ -8,13 +8,13 @@ type: Opaque
 stringData:
   apiKey: replace-me
 ---
-apiVersion: agents.agentops.io/v1alpha1
+apiVersion: agents.steadyinfra.com/v1alpha1
 kind: AgentService
 metadata:
   name: support-agent
   labels:
     app.kubernetes.io/name: agentops-operator
-    agentops.io/pool: support
+    agents.steadyinfra.com/pool: support
 spec:
   runtimeRef:
     name: echo-runtime
@@ -32,13 +32,13 @@ spec:
     maxReplicas: 5
     targetCPUUtilizationPercentage: 70
 ---
-apiVersion: agents.agentops.io/v1alpha1
+apiVersion: agents.steadyinfra.com/v1alpha1
 kind: AgentService
 metadata:
   name: billing-agent
   labels:
     app.kubernetes.io/name: agentops-operator
-    agentops.io/pool: support
+    agents.steadyinfra.com/pool: support
 spec:
   runtimeRef:
     name: echo-runtime

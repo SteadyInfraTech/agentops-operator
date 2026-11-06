@@ -2,10 +2,10 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/agents.agentops.io_agentservices.yaml
-- bases/agents.agentops.io_agentpools.yaml
-- bases/agents.agentops.io_agentruntimes.yaml
-- bases/agents.agentops.io_agentsessions.yaml
+- bases/agents.steadyinfra.com_agentservices.yaml
+- bases/agents.steadyinfra.com_agentpools.yaml
+- bases/agents.steadyinfra.com_agentruntimes.yaml
+- bases/agents.steadyinfra.com_agentsessions.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

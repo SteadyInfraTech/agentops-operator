@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package v1alpha1 contains API Schema definitions for the agents v1alpha1 API group.
 // +kubebuilder:object:generate=true
-// +groupName=agents.agentops.io
+// +groupName=agents.steadyinfra.com
 package v1alpha1
 
 import (
@@ -26,7 +26,7 @@ import (
 
 var (
 	// GroupVersion is group version used to register these objects.
-	GroupVersion = schema.GroupVersion{Group: "agents.agentops.io", Version: "v1alpha1"}
+	GroupVersion = schema.GroupVersion{Group: "agents.steadyinfra.com", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}

@@ -60,11 +60,11 @@ type AgentSessionReconciler struct {
 	Now func() time.Time
 }
 
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentsessions,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentsessions/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentsessions/finalizers,verbs=update
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentservices,verbs=get;list;watch
-// +kubebuilder:rbac:groups=agents.agentops.io,resources=agentpools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentsessions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentsessions/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentsessions/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentservices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.steadyinfra.com,resources=agentpools,verbs=get;list;watch
 
 func (r *AgentSessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	sess := &agentsv1alpha1.AgentSession{}

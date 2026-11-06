@@ -15,6 +15,15 @@ Pools and sessions sit on top of that for long-running, stateful agent workloads
 
 > Status: **MVP / `v1alpha1`**. APIs may change.
 
+> **API group changed.** The group is `agents.steadyinfra.com` (it was `agents.agentops.io`), and the pool
+> label is `agents.steadyinfra.com/pool`. This is an unreleased `v1alpha1`, so **there is no supported migration**
+> and objects must not be restored from a backup: restoring would carry over server-generated metadata, status
+> and finalizers that the new operators do not understand. To move a dev cluster, delete everything under the
+> old group, **wait** until it is gone (so the old operators remove what they created, including Cloudflare
+> resources for `ai-agent-edge-tunnel`), delete the old CRDs, uninstall the old operators, install this version,
+> and write your objects again under `agents.steadyinfra.com/v1alpha1`: `AgentRuntime` first, and the pool label
+> key renamed in both the `AgentService` labels and the `AgentPool` `spec.selector`.
+
 ## Custom resources
 
 | Kind | Short | Purpose |
@@ -34,11 +43,11 @@ AgentRuntime ──(runtimeRef)──▶ AgentService ──owns──▶ Deploy
 ### AgentService
 
 ```yaml
-apiVersion: agents.agentops.io/v1alpha1
+apiVersion: agents.steadyinfra.com/v1alpha1
 kind: AgentService
 metadata:
   name: support-agent
-  labels: { agentops.io/pool: support }
+  labels: { agents.steadyinfra.com/pool: support }
 spec:
   runtimeRef: { name: echo-runtime }      # or: image: ghcr.io/acme/agent:1.2
   model:

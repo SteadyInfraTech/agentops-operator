@@ -24,7 +24,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - agents.agentops.io
+  - agents.steadyinfra.com
   resources:
   - agentpools
   - agentruntimes
@@ -39,7 +39,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - agents.agentops.io
+  - agents.steadyinfra.com
   resources:
   - agentpools/finalizers
   - agentruntimes/finalizers
@@ -48,7 +48,7 @@ rules:
   verbs:
   - update
 - apiGroups:
-  - agents.agentops.io
+  - agents.steadyinfra.com
   resources:
   - agentpools/status
   - agentruntimes/status
