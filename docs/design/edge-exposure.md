@@ -134,11 +134,16 @@ and finalizer keys that used `agentops.io/` move with them.
 finalizer, and the new groups' CRDs are different resources. Upgrading in place would leave old
 tunnels, DNS records and Access applications in Cloudflare with nothing managing them. Order:
 
+0. **Back up** every old object, `AgentRuntime` included: deleting a CRD deletes all its objects.
 1. Delete every `AgentEdgeTunnel` (old group) and **wait** until they are gone. The old operator's
    finalizer removes the Cloudflare resources; if one is stuck, fix that before continuing.
-2. Delete the old `AgentSession`, `AgentPool` and `AgentService` objects, then the old CRDs.
-3. Uninstall the old operators, install the new ones, and recreate the objects under the new groups.
-4. Check the Cloudflare dashboard for tunnels, DNS records and Access applications left behind.
+2. Delete the old `AgentSession`, `AgentService`, `AgentPool` and `AgentRuntime` objects, then the old CRDs.
+3. Uninstall the old operators and install the new ones.
+4. Recreate from the backup under the new groups, **`AgentRuntime` first**: an `AgentService` with a
+   `runtimeRef` stays `Pending` until its runtime exists. Rename the pool label key in the service
+   labels and in each `AgentPool` `spec.selector` together, or a pool matches nothing and its sessions
+   stay `Pending`.
+5. Check the Cloudflare dashboard for tunnels, DNS records and Access applications left behind.
 
 ## Why not the alternatives
 
@@ -156,8 +161,11 @@ tunnels, DNS records and Access applications in Cloudflare with nothing managing
 2. **How the client learns the hostname**: it reads `status.hostname` of the `AgentEdgeTunnel`
    it asked for. `status.hostname` is set while the tunnel is still `Pending`, so the hostname alone
    does **not** mean the endpoint works: the client, and the shared library, must wait for
-   `status.phase: Active` **and** `status.connectorReady: true`, and treat `Failed` and
-   `Terminated` as final. The edge operator does not write to `AgentSession`, so it needs no `patch` on
+   `status.phase: Active` **and** `status.connectorReady: true`. Only `Terminated` is final.
+   `Failed` is **not**: the edge controller sets it for transient provisioning errors and keeps
+   retrying, and it also uses it for an invalid spec, which is not retried. The client keeps
+   watching through `Failed`, surfaces `status.message`, and applies its own timeout rather than
+   giving up on the first `Failed`. The edge operator does not write to `AgentSession`, so it needs no `patch` on
    sessions. If a client later needs the hostname on the session itself, an annotation can be
    added without changing the contract. Decided.
 3. **Who creates the `AgentEdgeTunnel`**: the component that creates the `AgentSession`
